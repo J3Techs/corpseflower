@@ -5,6 +5,11 @@ package org.jetbrains.java.decompiler.api.java;
  */
 public enum JavaPassLocation {
   /**
+   * Runs after class loading but before the standard decompilation pipeline begins.
+   * Returning true has no effect.
+   */
+  PRE_DECOMPILE(false),
+  /**
    * Runs before most resugaring passes run in the main loop.
    * Returning true has no effect.
    */

@@ -24,7 +24,7 @@ allprojects {
   apply plugin: 'java'
   ext.isArm = System.getProperty('os.arch') == 'aarch64'
 
-  group = 'org.vineflower'
+  group = 'org.corpseflower'
 
   compileJava {
     sourceCompatibility = '17'
@@ -55,14 +55,11 @@ allprojects {
   }
 }
 
-group = 'org.vineflower'
-base.archivesName = 'vineflower'
+group = 'org.corpseflower'
+base.archivesName = 'corpseflower'
 
-version = '1.11.2'
-
+version = '1.0.0-SNAPSHOT'
 def ENV = System.getenv()
-version = version + (ENV.GITHUB_ACTIONS ? "" : "+local")
-version = version + (ENV.STATUS == "snapshot" ? "-SNAPSHOT" : "")
 
 sourceSets {
   main.java.srcDirs 'src'
@@ -76,6 +73,11 @@ sourceSets {
 repositories { mavenCentral() }
 
 dependencies {
+  implementation 'org.ow2.asm:asm:9.7.1'
+  implementation 'org.ow2.asm:asm-tree:9.7.1'
+  implementation 'org.ow2.asm:asm-analysis:9.7.1'
+  implementation files('lib/cfr-0.152.jar')
+
   testImplementation("org.junit.jupiter:junit-jupiter-api:${project.junit_bom}")
   testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:${project.junit_bom}")
   testImplementation("org.junit.jupiter:junit-jupiter-params:${project.junit_bom}")
@@ -198,8 +200,8 @@ jar {
 
   manifest {
     attributes (
-      'Main-Class': 'org.jetbrains.java.decompiler.main.decompiler.ConsoleDecompiler',
-      'Implementation-Name': "Vineflower",
+      'Main-Class': 'org.corpseflower.CorpseflowerMain',
+      'Implementation-Name': "Corpseflower",
       'Implementation-Version': project.version
     )
   }
@@ -236,8 +238,8 @@ def allJar = tasks.register('allJar', Jar) {allJar ->
 
   manifest {
     attributes (
-      'Main-Class': 'org.jetbrains.java.decompiler.main.decompiler.ConsoleDecompiler',
-      'Implementation-Name': "Vineflower",
+      'Main-Class': 'org.corpseflower.CorpseflowerMain',
+      'Implementation-Name': "Corpseflower",
       'Implementation-Version': project.version
     )
   }

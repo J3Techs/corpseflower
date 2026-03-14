@@ -1,5 +1,8 @@
 package org.jetbrains.java.decompiler.main.plugins;
 
+import org.corpseflower.passes.ConstantExpressionFolder;
+import org.corpseflower.passes.DeadCodeEliminator;
+import org.corpseflower.passes.StateMachineDeflattener;
 import org.jetbrains.java.decompiler.api.plugin.Plugin;
 import org.jetbrains.java.decompiler.api.java.JavaPassLocation;
 import org.jetbrains.java.decompiler.api.java.JavaPassRegistrar;
@@ -54,6 +57,10 @@ public class PluginContext {
     initialized = true;
 
     JavaPassRegistrar registrar = new JavaPassRegistrar();
+    registrar.register(JavaPassLocation.MAIN_LOOP, NamedPass.of("CorpseflowerConstFold", new ConstantExpressionFolder()));
+    registrar.register(JavaPassLocation.MAIN_LOOP, NamedPass.of("CorpseflowerDeadCode", new DeadCodeEliminator()));
+    registrar.register(JavaPassLocation.AT_END, NamedPass.of("CorpseflowerDeflatten", new StateMachineDeflattener()));
+
     for (Plugin plugin : plugins) {
       String id = plugin.id();
       if (!ids.add(id)) {
