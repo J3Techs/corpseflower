@@ -16,6 +16,10 @@ import java.util.Set;
 public final class DecHelper {
 
   public static boolean checkStatementExceptions(List<? extends Statement> lst) {
+    return checkStatementExceptions(lst, Set.of());
+  }
+
+  public static boolean checkStatementExceptions(List<? extends Statement> lst, Set<Statement> ignoredHandlers) {
 
     Set<Statement> all = new HashSet<>(lst);
 
@@ -24,6 +28,7 @@ public final class DecHelper {
 
     for (Statement stat : lst) {
       Set<Statement> setNew = stat.getNeighboursSet(StatEdge.TYPE_EXCEPTION, EdgeDirection.FORWARD);
+      setNew.removeAll(ignoredHandlers);
 
       if (intersection == null) {
         intersection = setNew;
@@ -42,6 +47,10 @@ public final class DecHelper {
     }
 
     for (Statement stat : handlers) {
+      if (ignoredHandlers.contains(stat)) {
+        continue;
+      }
+
       if (!all.contains(stat) || !all.containsAll(stat.getNeighbours(StatEdge.TYPE_EXCEPTION, EdgeDirection.BACKWARD))) {
         return false;
       }
@@ -50,7 +59,9 @@ public final class DecHelper {
     // check for other handlers (excluding head)
     for (int i = 1; i < lst.size(); i++) {
       Statement stat = lst.get(i);
-      if (!stat.getPredecessorEdges(StatEdge.TYPE_EXCEPTION).isEmpty() && !handlers.contains(stat)) {
+      if (!stat.getPredecessorEdges(StatEdge.TYPE_EXCEPTION).isEmpty()
+          && !handlers.contains(stat)
+          && !ignoredHandlers.contains(stat)) {
         return false;
       }
     }

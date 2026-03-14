@@ -134,6 +134,9 @@ public class MethodProcessor implements Runnable {
     ExceptionDeobfuscator.insertEmptyExceptionHandlerBlocks(graph);
 
     DeadCodeHelper.mergeBasicBlocks(graph);
+    ExceptionDeobfuscator.splitCleanupCloseBlocks(graph, cl);
+    ExceptionDeobfuscator.removeNonThrowingExceptionEdges(graph, cl);
+    ExceptionDeobfuscator.removeRedundantCleanupCloseBlocks(graph, cl);
 
     DecompilerContext.getCounterContainer().setCounter(CounterContainer.VAR_COUNTER, mt.getLocalVariables());
 

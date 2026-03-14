@@ -21,6 +21,7 @@ import org.jetbrains.java.decompiler.util.collections.VBStyleCollection;
 import java.util.*;
 
 public final class DomHelper implements GraphParser {
+  private static final int MAX_IRREDUCIBLE_SPLITS = 12;
 
   @Override
   public RootStatement createStatement(ControlFlowGraph graph, StructMethod mt) {
@@ -81,6 +82,14 @@ public final class DomHelper implements GraphParser {
         Statement stsuccex = stats.getWithKey(succex.id);
 
         ExceptionRangeCFG range = graph.getExceptionRange(succex, block);
+        if (range == null) {
+          DecompilerContext.getLogger().writeMessage(
+            "Missing exception range for block " + block.id + " -> " + succex.id + " in " + mt.getName() + mt.getDescriptor(),
+            IFernflowerLogger.Severity.WARN
+          );
+          stat.addSuccessor(new StatEdge(stat, stsuccex, null));
+          continue;
+        }
         if (!range.isCircular()) {
           stat.addSuccessor(new StatEdge(stat, stsuccex, range.getExceptionTypes()));
         }
@@ -392,7 +401,7 @@ public final class DomHelper implements GraphParser {
 
     for (int mapstage = 0; mapstage < 2; mapstage++) {
 
-      for (int reducibility = 0; reducibility < 5; reducibility++) { // FIXME: implement proper node splitting. For now up to 5 nodes in sequence are splitted.
+      for (int reducibility = 0; reducibility < MAX_IRREDUCIBLE_SPLITS; reducibility++) { // FIXME: implement proper node splitting. For now we allow a deeper split budget for obfuscated methods.
 
         if (reducibility > 0) {
 
@@ -410,11 +419,11 @@ public final class DomHelper implements GraphParser {
             } else {
               tracer.warn(general, "Split irreducible flow: " + reducibility);
               // Mirrors comment from reducibility loop, unsure if this is ever hit but it's here just in case
-              if (reducibility == 4 && (mapstage == 1 || mapRefreshed)) {
+              if (reducibility == MAX_IRREDUCIBLE_SPLITS - 1 && (mapstage == 1 || mapRefreshed)) {
                 DecompilerContext.getLogger().writeMessage("Irreducible statement too complex to be decomposed!", IFernflowerLogger.Severity.ERROR);
 
                 tracer.error(general, "Flow too complex to be decomposed!");
-                root.addComment("$VF: Irreducible bytecode has more than 5 nodes in sequence and was not entirely decomposed", true);
+                root.addComment("$VF: Irreducible bytecode exceeded the Corpseflower split budget and was not entirely decomposed", true);
               }
 
               root.addComment("$VF: Irreducible bytecode was duplicated to produce valid code");

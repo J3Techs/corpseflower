@@ -1,5 +1,8 @@
 package org.jetbrains.java.decompiler.main.plugins;
 
+import org.corpseflower.deobfuscation.CorpseflowerPreDecompilePass;
+import org.corpseflower.deobfuscation.NamedPreDecompilePass;
+import org.corpseflower.deobfuscation.PreDecompileContext;
 import org.corpseflower.passes.ConstantExpressionFolder;
 import org.corpseflower.passes.DeadCodeEliminator;
 import org.corpseflower.passes.StateMachineDeflattener;
@@ -25,6 +28,7 @@ public class PluginContext {
   private final Map<Plugin, PluginSource> bySource = new HashMap<>();
   private boolean initialized = false;
   private Map<JavaPassLocation, List<NamedPass>> passes = new HashMap<>();
+  private Map<JavaPassLocation, List<NamedPreDecompilePass>> preDecompilePasses = new EnumMap<>(JavaPassLocation.class);
   private final Map<Plugin, LanguageSpec> languageSpecs = new HashMap<>();
   private final Set<String> ids = new HashSet<>();
 
@@ -57,9 +61,10 @@ public class PluginContext {
     initialized = true;
 
     JavaPassRegistrar registrar = new JavaPassRegistrar();
+    registrar.register(JavaPassLocation.PRE_DECOMPILE, NamedPreDecompilePass.of("CorpseflowerDeobfuscate", new CorpseflowerPreDecompilePass()));
     registrar.register(JavaPassLocation.MAIN_LOOP, NamedPass.of("CorpseflowerConstFold", new ConstantExpressionFolder()));
     registrar.register(JavaPassLocation.MAIN_LOOP, NamedPass.of("CorpseflowerDeadCode", new DeadCodeEliminator()));
-    registrar.register(JavaPassLocation.AT_END, NamedPass.of("CorpseflowerDeflatten", new StateMachineDeflattener()));
+    registrar.register(JavaPassLocation.AFTER_MAIN, NamedPass.of("CorpseflowerDeflatten", new StateMachineDeflattener()));
 
     for (Plugin plugin : plugins) {
       String id = plugin.id();
@@ -84,6 +89,20 @@ public class PluginContext {
     }
 
     passes = registrar.getPasses();
+    preDecompilePasses = registrar.getPreDecompilePasses();
+  }
+
+  public void runPreDecompilePasses(JavaPassLocation location, PreDecompileContext ctx) {
+    for (NamedPreDecompilePass pass : preDecompilePasses.getOrDefault(location, Collections.emptyList())) {
+      CancelationManager.checkCanceled();
+      try {
+        pass.run(ctx);
+      } catch (RuntimeException ex) {
+        throw ex;
+      } catch (Exception ex) {
+        throw new RuntimeException("PRE_DECOMPILE pass failed: " + pass.getName(), ex);
+      }
+    }
   }
 
   // Returns whether any passes were run

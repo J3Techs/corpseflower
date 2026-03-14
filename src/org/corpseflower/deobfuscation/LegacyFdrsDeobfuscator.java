@@ -84,6 +84,10 @@ public final class LegacyFdrsDeobfuscator {
     static Set<String> uncertainSyntheticClasses = new HashSet<>();
     static Map<String, ClassNode> allClasses = null;
 
+    record SerializedClasses(Map<String, byte[]> classBytes, int fallbackCount) {}
+
+    public record InMemoryResult(Map<String, byte[]> classBytes) {}
+
     static void resetState() {
         stringsDecrypted = 0;
         stringsFailedDynamic = 0;
@@ -408,7 +412,7 @@ public final class LegacyFdrsDeobfuscator {
                 System.out.println("[FDRS]   fakeTry=" + tFakeTry + "ms deadCode=" + tDeadCode + "ms gotoInLoop=" + tGotoInLoop + "ms reorder=" + tReorder +
                     "ms localize=" + tLocalize + "ms opaque=" + tOpaque + "ms deadExpr=" + tDeadExpr + "ms unreachable=" + tUnreachable + "ms consolidate=" + tConsolidate + "ms cleanupExn=" + tCleanupExn + "ms nops=" + tNops + "ms goto=" + tGoto + "ms");
                 if (newTotal == prevTotal) break;
-            } while (round < 8);
+            } while (round < 12);
 
             System.out.println("[FDRS] Removed " + fakeTryCatchRemoved + " fake try-catch blocks");
             System.out.println("[FDRS] Removed " + deadInstructionsRemoved + " dead instructions");
@@ -617,6 +621,332 @@ public final class LegacyFdrsDeobfuscator {
             System.out.println("[FDRS] ClassWriter fallbacks:   " + fallbackCount);
         }
         System.out.println("[FDRS] Done.");
+    }
+
+    private static SerializedClasses serializeClasses(Map<String, ClassNode> classes,
+                                                      Map<String, byte[]> rawClassBytes) {
+        Map<String, byte[]> classBytesByName = new LinkedHashMap<>();
+        int fallbackCount = 0;
+
+        for (Map.Entry<String, ClassNode> entry : classes.entrySet()) {
+            ClassNode cn = entry.getValue();
+            byte[] classBytes = null;
+
+            try {
+                ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES) {
+                    @Override protected String getCommonSuperClass(String type1, String type2) {
+                        try {
+                            return super.getCommonSuperClass(type1, type2);
+                        } catch (Exception e) {
+                            return "java/lang/Object";
+                        }
+                    }
+                };
+                cn.accept(cw);
+                classBytes = cw.toByteArray();
+            } catch (Throwable ignored) {}
+
+            if (classBytes == null) {
+                try {
+                    ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+                    cn.accept(cw);
+                    classBytes = cw.toByteArray();
+                } catch (Throwable ignored) {}
+            }
+
+            if (classBytes == null) {
+                try {
+                    ClassWriter cw = new ClassWriter(0);
+                    cn.accept(cw);
+                    classBytes = cw.toByteArray();
+                } catch (Throwable t3) {
+                    System.err.println("[FDRS] Strategy 3 failed for " + cn.name + ": " + t3.getClass().getSimpleName() + ": " + t3.getMessage());
+                    t3.printStackTrace(System.err);
+                }
+            }
+
+            if (classBytes == null) {
+                classBytes = rawClassBytes.get(cn.name);
+                if (classBytes != null) {
+                    System.err.println("[FDRS] WARN: Fell back to original bytes for " + cn.name);
+                    fallbackCount++;
+                }
+            }
+
+            if (classBytes != null) {
+                classBytesByName.put(cn.name, classBytes);
+            }
+        }
+
+        return new SerializedClasses(classBytesByName, fallbackCount);
+    }
+
+    private static void printSummary(int fallbackCount) {
+        System.out.println("\n[FDRS] === Summary ===");
+        System.out.println("[FDRS] Strings decrypted:       " + stringsDecrypted);
+        System.out.println("[FDRS] Analyzer fallbacks:      " + stringsFailedAnalyzer);
+        System.out.println("[FDRS] String failures:         " + stringsFailedDynamic);
+        System.out.println("[FDRS] Fake try-catch removed:  " + fakeTryCatchRemoved);
+        System.out.println("[FDRS] Dead insns removed:      " + deadInstructionsRemoved);
+        System.out.println("[FDRS] Opaque preds simplified: " + opaquePredicatesSimplified);
+        System.out.println("[FDRS] Dead expressions removed:" + deadExpressionsRemoved);
+        System.out.println("[FDRS] Unreachable insns:       " + unreachableInsnsRemoved);
+        System.out.println("[FDRS] Exn table cleaned:       " + exnTableEntriesCleaned);
+        System.out.println("[FDRS] Opaque methods removed:  " + opaqueMethodsRemoved);
+        System.out.println("[FDRS] Opaque fields removed:   " + opaqueFieldsRemoved);
+        System.out.println("[FDRS] ZKM classes removed:     " + zkmClassesRemoved);
+        System.out.println("[FDRS] NOPs removed:            " + nopsRemoved);
+        if (fallbackCount > 0) {
+            System.out.println("[FDRS] ClassWriter fallbacks:   " + fallbackCount);
+        }
+        System.out.println("[FDRS] Done.");
+    }
+
+    static InMemoryResult processClassesInMemory(Map<String, byte[]> inputClasses,
+                                                 String inputPath,
+                                                 boolean doStrings,
+                                                 boolean doFlow,
+                                                 boolean verbose) throws Exception {
+        verboseMode = verbose;
+        System.out.println("[FDRS] Loading in-memory classes from " + inputPath);
+
+        Map<String, ClassNode> classes = new LinkedHashMap<>();
+        Map<String, byte[]> rawClassBytes = new LinkedHashMap<>();
+        for (Map.Entry<String, byte[]> entry : inputClasses.entrySet()) {
+            try {
+                ClassNode cn = new ClassNode();
+                new ClassReader(entry.getValue()).accept(cn, 0);
+                classes.put(cn.name, cn);
+                rawClassBytes.put(cn.name, entry.getValue());
+            } catch (Exception ex) {
+                System.err.println("[FDRS] WARN: Skipping unreadable in-memory class " + entry.getKey() + ": " + ex.getMessage());
+            }
+        }
+
+        System.out.println("[FDRS] Loaded " + classes.size() + " in-memory classes");
+        runDeobfuscationPipeline(classes, rawClassBytes, inputPath, doStrings, doFlow, verbose);
+        SerializedClasses serialized = serializeClasses(classes, rawClassBytes);
+        printSummary(serialized.fallbackCount());
+        return new InMemoryResult(serialized.classBytes());
+    }
+
+    private static void runDeobfuscationPipeline(Map<String, ClassNode> classes,
+                                                 Map<String, byte[]> rawClassBytes,
+                                                 String inputPath,
+                                                 boolean doStrings,
+                                                 boolean doFlow,
+                                                 boolean verbose) throws Exception {
+        long phaseStart = System.currentTimeMillis();
+        detectZkmInfrastructure(classes);
+        System.out.println("[FDRS] Phase 0 (detect): " + (System.currentTimeMillis() - phaseStart) + "ms");
+
+        if (decryptorClassName == null) {
+            System.out.println("[FDRS] No ZKM string decryptor detected. Skipping string decryption.");
+            doStrings = false;
+        } else {
+            System.out.println("[FDRS] Detected ZKM decryptor: " + decryptorClassName.replace('/', '.'));
+            System.out.println("[FDRS] Opaque predicate classes: " + opaquePredicateClasses.size());
+            System.out.println("[FDRS] 2-arg decrypt methods: " + zkm2ArgMethods);
+            System.out.println("[FDRS] 3-arg decrypt methods: " + zkm3ArgMethods);
+        }
+
+        allClasses = classes;
+
+        if (doStrings) {
+            System.out.println("\n[FDRS] === Phase 1: String Decryption ===");
+            phaseStart = System.currentTimeMillis();
+            decryptStrings(classes, rawClassBytes, inputPath, verbose);
+            System.out.println("[FDRS] Phase 1 (strings): " + (System.currentTimeMillis() - phaseStart) + "ms");
+            System.out.println("[FDRS] Decrypted " + stringsDecrypted + " strings (" +
+                               stringsFailedAnalyzer + " analyzer fallbacks, " +
+                               stringsFailedDynamic + " failures)");
+        }
+
+        if (!doStrings && globalMethodCache.isEmpty()) {
+            phaseStart = System.currentTimeMillis();
+            populateCachesFromJar(classes, inputPath, verbose);
+            System.out.println("[FDRS] Cache population: " + (System.currentTimeMillis() - phaseStart) + "ms");
+        }
+
+        if (doFlow) {
+            System.out.println("\n[FDRS] === Phase 2: Flow Deobfuscation ===");
+
+            int round = 0;
+            int prevTotal;
+            do {
+                round++;
+                long roundStart = System.currentTimeMillis();
+                long tFakeTry = 0, tDeadCode = 0, tOpaque = 0, tDeadExpr = 0, tUnreachable = 0, tConsolidate = 0, tCleanupExn = 0, tNops = 0, tGoto = 0, tGotoInLoop = 0, tReorder = 0, tLocalize = 0;
+                prevTotal = fakeTryCatchRemoved + deadInstructionsRemoved +
+                           opaquePredicatesSimplified + deadExpressionsRemoved + nopsRemoved +
+                           unreachableInsnsRemoved + exnTableEntriesCleaned + exnHandlersCleaned +
+                           chainsFolded + crossBlockAlgFolded + deadGotosRemoved + exnVerifyFixed;
+                for (ClassNode cn : classes.values()) {
+                    for (MethodNode mn : cn.methods) {
+                        long t0 = System.currentTimeMillis();
+                        removeFakeTryCatch(cn, mn);
+                        long t1 = System.currentTimeMillis();
+                        removeDeadCode(cn, mn);
+                        long t2 = System.currentTimeMillis();
+                        shortenGotoChains(mn);
+                        long t2b = System.currentTimeMillis();
+                        reorderBasicBlocksImpl(cn, mn);
+                        long t2c = System.currentTimeMillis();
+                        localizeRegisterFields(cn, mn);
+                        long t2d = System.currentTimeMillis();
+                        eliminateUnreachableCode(cn, mn);
+                        ensureMethodTermination(mn);
+                        long t2e = System.currentTimeMillis();
+                        simplifyOpaquePredicates(cn, mn);
+                        long t3 = System.currentTimeMillis();
+                        removeDeadExpressions(cn, mn);
+                        long t4 = System.currentTimeMillis();
+                        eliminateUnreachableCode(cn, mn);
+                        long t5 = System.currentTimeMillis();
+                        consolidateExceptionTable(mn);
+                        long t5b = System.currentTimeMillis();
+                        cleanupExceptionHandlers(cn, mn);
+                        verifyAndFixExceptionTable(cn, mn);
+                        long t5c = System.currentTimeMillis();
+                        removeNops(mn);
+                        long t6 = System.currentTimeMillis();
+                        shortenGotoChains(mn);
+                        long t7 = System.currentTimeMillis();
+                        tFakeTry += t1 - t0;
+                        tDeadCode += t2 - t1;
+                        tGotoInLoop += t2b - t2;
+                        tReorder += t2c - t2b;
+                        tLocalize += t2d - t2c;
+                        tOpaque += t3 - t2d;
+                        tDeadExpr += t4 - t3;
+                        tUnreachable += t5 - t4;
+                        tConsolidate += t5b - t5;
+                        tCleanupExn += t5c - t5b;
+                        tNops += t6 - t5c;
+                        tGoto += t7 - t6;
+                    }
+                }
+                int newTotal = fakeTryCatchRemoved + deadInstructionsRemoved +
+                              opaquePredicatesSimplified + deadExpressionsRemoved + nopsRemoved +
+                              unreachableInsnsRemoved + exnTableEntriesCleaned + exnHandlersCleaned +
+                              chainsFolded + crossBlockAlgFolded + deadGotosRemoved + exnVerifyFixed;
+                long roundMs = System.currentTimeMillis() - roundStart;
+                System.out.println("[FDRS] Round " + round + ": " + (newTotal - prevTotal) + " changes (" + roundMs + "ms)");
+                System.out.println("[FDRS]   fakeTry=" + tFakeTry + "ms deadCode=" + tDeadCode + "ms gotoInLoop=" + tGotoInLoop + "ms reorder=" + tReorder +
+                    "ms localize=" + tLocalize + "ms opaque=" + tOpaque + "ms deadExpr=" + tDeadExpr + "ms unreachable=" + tUnreachable + "ms consolidate=" + tConsolidate + "ms cleanupExn=" + tCleanupExn + "ms nops=" + tNops + "ms goto=" + tGoto + "ms");
+                if (newTotal == prevTotal) break;
+            } while (round < 12);
+
+            System.out.println("[FDRS] Removed " + fakeTryCatchRemoved + " fake try-catch blocks");
+            System.out.println("[FDRS] Removed " + deadInstructionsRemoved + " dead instructions");
+            System.out.println("[FDRS] Simplified " + opaquePredicatesSimplified + " opaque predicates");
+            System.out.println("[FDRS] Removed " + deadExpressionsRemoved + " dead expressions");
+            System.out.println("[FDRS] Removed " + unreachableInsnsRemoved + " unreachable instructions");
+            System.out.println("[FDRS] Cleaned " + exnTableEntriesCleaned + " exception table entries");
+            System.out.println("[FDRS] Cleaned " + exnHandlersCleaned + " exception handlers (non-throwing/dead/dup)");
+            System.out.println("[FDRS] Folded " + chainsFolded + " constant chains");
+            System.out.println("[FDRS] Folded " + crossBlockAlgFolded + " cross-block algebraic identities");
+            System.out.println("[FDRS] Removed " + deadGotosRemoved + " dead GOTOs");
+            System.out.println("[FDRS] Exception table verify fixes: " + exnVerifyFixed);
+            System.out.println("[FDRS] Analyzer failures: " + analyzerFailures);
+            System.out.println("[FDRS] Removed " + nopsRemoved + " NOPs");
+
+            long reorderStart = System.currentTimeMillis();
+            for (ClassNode cn : classes.values()) {
+                for (MethodNode mn : cn.methods) {
+                    reorderBasicBlocksImpl(cn, mn);
+                }
+            }
+            System.out.println("[FDRS] Block reordering: " + (System.currentTimeMillis() - reorderStart) + "ms");
+        }
+
+        boolean canCleanup = (doStrings && stringsFailedDynamic == 0) || decryptorClassName == null;
+        if (canCleanup && zkmPackageName != null) {
+            System.out.println("\n[FDRS] === Phase 3: ZKM Infrastructure Removal ===");
+            phaseStart = System.currentTimeMillis();
+
+            Set<String> zkmClasses = new LinkedHashSet<>();
+            for (String name : classes.keySet()) {
+                if (name.startsWith(zkmPackageName + "/")) {
+                    zkmClasses.add(name);
+                }
+            }
+
+            Set<String> referencedZkm = new LinkedHashSet<>();
+            for (Map.Entry<String, ClassNode> entry : classes.entrySet()) {
+                if (entry.getKey().startsWith(zkmPackageName + "/")) continue;
+                ClassNode cn = entry.getValue();
+                for (MethodNode mn : cn.methods) {
+                    for (AbstractInsnNode insn : mn.instructions) {
+                        if (insn instanceof MethodInsnNode mi && zkmClasses.contains(mi.owner)) {
+                            referencedZkm.add(mi.owner + "." + mi.name);
+                        }
+                        if (insn instanceof FieldInsnNode fi && zkmClasses.contains(fi.owner)) {
+                            referencedZkm.add(fi.owner + "." + fi.name);
+                        }
+                    }
+                }
+            }
+
+            if (!referencedZkm.isEmpty() && verbose) {
+                System.out.println("[FDRS] WARNING: " + referencedZkm.size() + " remaining references to ZKM classes — cleaning anyway");
+                for (String ref : referencedZkm) {
+                    System.out.println("[FDRS]   ref: " + ref);
+                }
+            }
+
+            Iterator<Map.Entry<String, ClassNode>> it = classes.entrySet().iterator();
+            while (it.hasNext()) {
+                String name = it.next().getKey();
+                if (name.startsWith(zkmPackageName + "/")) {
+                    it.remove();
+                    rawClassBytes.remove(name);
+                    zkmClassesRemoved++;
+                }
+            }
+
+            for (ClassNode cn : classes.values()) {
+                opaqueFieldsRemoved += removeOpaquePredicateFields(cn);
+                removeOpaquePredicateMethods(cn);
+            }
+            System.out.println("[FDRS] Removed " + zkmClassesRemoved + " ZKM infrastructure classes");
+            System.out.println("[FDRS] Removed " + opaqueMethodsRemoved + " opaque predicate methods from app classes");
+            System.out.println("[FDRS] Removed " + opaqueFieldsRemoved + " opaque predicate fields from app classes");
+            System.out.println("[FDRS] ZKM package purged: " + zkmPackageName);
+            System.out.println("[FDRS] Phase 3 (cleanup): " + (System.currentTimeMillis() - phaseStart) + "ms");
+        }
+
+        if (zkmPackageName == null) {
+            int methodsBefore = opaqueMethodsRemoved;
+            int fieldsBefore = opaqueFieldsRemoved;
+            for (ClassNode cn : classes.values()) {
+                opaqueFieldsRemoved += removeOpaquePredicateFields(cn);
+                removeOpaquePredicateMethods(cn);
+            }
+            if (opaqueMethodsRemoved > methodsBefore || opaqueFieldsRemoved > fieldsBefore) {
+                System.out.println("[FDRS] Removed " + (opaqueMethodsRemoved - methodsBefore) +
+                                   " per-class opaque predicate methods, " +
+                                   (opaqueFieldsRemoved - fieldsBefore) + " fields (no ZKM package)");
+            }
+        }
+
+        int renamedVars = 0;
+        for (ClassNode cn : classes.values()) {
+            renamedVars += cleanObfuscatedVariableNames(cn);
+        }
+        if (renamedVars > 0) {
+            System.out.println("[FDRS] Renamed " + renamedVars + " obfuscated local variable names");
+        }
+
+        int sanitized = 0;
+        for (ClassNode cn : classes.values()) {
+            for (MethodNode mn : cn.methods) {
+                if (sanitizeMethodStructure(mn)) sanitized++;
+            }
+        }
+        if (sanitized > 0) {
+            System.out.println("[FDRS] Sanitized " + sanitized + " methods (fixed label/exception table references)");
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -2125,8 +2455,9 @@ public final class LegacyFdrsDeobfuscator {
                     continue;
                 }
 
-                // Pattern 2: degenerate try block (start == handler or end == handler)
-                if (tcb.start == tcb.handler || tcb.end == tcb.handler) {
+                // Pattern 2: degenerate try block (empty range or handler at start)
+                // Note: end == handler is valid for an exclusive end label and must be preserved.
+                if (tcb.start == tcb.handler || tcb.start == tcb.end) {
                     it.remove();
                     fakeTryCatchRemoved++;
                     continue;
@@ -3146,6 +3477,15 @@ public final class LegacyFdrsDeobfuscator {
                     if (castNode != null) toRemove.add(castNode);
                     toRemove.add(insn);
                 }
+                // Pattern D: any side-effect-free producer tree → POP
+                else {
+                    LinkedHashSet<AbstractInsnNode> producerTree = new LinkedHashSet<>();
+                    if (collectPureProducerTree(exprNode, producerTree) != null) {
+                        toRemove.addAll(producerTree);
+                        if (castNode != null) toRemove.add(castNode);
+                        toRemove.add(insn);
+                    }
+                }
 
                 if (!toRemove.isEmpty()) {
                     for (AbstractInsnNode n : toRemove) {
@@ -3159,7 +3499,120 @@ public final class LegacyFdrsDeobfuscator {
 
                 insn = next;
             }
+
+            if (!changed && trimPureStackPrefixesBeforeReturns(mn)) {
+                changed = true;
+            }
         }
+    }
+
+    private static boolean trimPureStackPrefixesBeforeReturns(MethodNode mn) {
+        boolean changed = false;
+
+        for (AbstractInsnNode insn = mn.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+            int op = insn.getOpcode();
+            if (op != Opcodes.ARETURN && op != Opcodes.IRETURN && op != Opcodes.FRETURN) {
+                continue;
+            }
+
+            AbstractInsnNode producer = skipNonInsn(insn.getPrevious(), true);
+            if (producer == null) {
+                continue;
+            }
+
+            LinkedHashSet<AbstractInsnNode> liveTree = new LinkedHashSet<>();
+            AbstractInsnNode earliest = collectPureProducerTree(producer, liveTree);
+            if (earliest == null) {
+                continue;
+            }
+
+            while (true) {
+                AbstractInsnNode extra = skipNonInsn(earliest.getPrevious(), true);
+                if (extra == null) {
+                    break;
+                }
+
+                LinkedHashSet<AbstractInsnNode> deadTree = new LinkedHashSet<>();
+                AbstractInsnNode deadStart = collectPureProducerTree(extra, deadTree);
+                if (deadStart == null) {
+                    break;
+                }
+
+                for (AbstractInsnNode dead : deadTree) {
+                    mn.instructions.remove(dead);
+                    deadExpressionsRemoved++;
+                }
+
+                earliest = deadStart;
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
+
+    private static AbstractInsnNode collectPureProducerTree(AbstractInsnNode insn, LinkedHashSet<AbstractInsnNode> out) {
+        if (insn == null) {
+            return null;
+        }
+
+        int op = insn.getOpcode();
+        if (op == -1 || insn instanceof LabelNode || insn instanceof FrameNode || insn instanceof LineNumberNode) {
+            return null;
+        }
+
+        if (isPureLeafProducer(insn) || isOpaqueFieldGet(insn)) {
+            out.add(insn);
+            return insn;
+        }
+
+        if (op == Opcodes.INEG || op == Opcodes.I2B || op == Opcodes.I2C || op == Opcodes.I2S) {
+            AbstractInsnNode prev = skipNonInsn(insn.getPrevious(), true);
+            AbstractInsnNode earliest = collectPureProducerTree(prev, out);
+            if (earliest == null) {
+                return null;
+            }
+            out.add(insn);
+            return earliest;
+        }
+
+        if (isBinaryIntArith(op)) {
+            AbstractInsnNode rhs = skipNonInsn(insn.getPrevious(), true);
+            AbstractInsnNode rhsStart = collectPureProducerTree(rhs, out);
+            if (rhsStart == null) {
+                return null;
+            }
+
+            AbstractInsnNode lhs = skipNonInsn(rhsStart.getPrevious(), true);
+            AbstractInsnNode lhsStart = collectPureProducerTree(lhs, out);
+            if (lhsStart == null) {
+                return null;
+            }
+
+            out.add(insn);
+            return lhsStart;
+        }
+
+        return null;
+    }
+
+    private static boolean isPureLeafProducer(AbstractInsnNode insn) {
+        int op = insn.getOpcode();
+        if (op == Opcodes.ACONST_NULL || isConstantPush(insn)) {
+            return true;
+        }
+
+        return op == Opcodes.ILOAD || op == Opcodes.FLOAD || op == Opcodes.ALOAD;
+    }
+
+    private static boolean isOpaqueFieldGet(AbstractInsnNode insn) {
+        if (!(insn instanceof FieldInsnNode fi)) {
+            return false;
+        }
+
+        return fi.getOpcode() == Opcodes.GETSTATIC &&
+               fi.desc.equals("I") &&
+               globalFieldCache.containsKey(fi.owner + "." + fi.name);
     }
 
     static boolean isBinaryIntArith(int opcode) {
@@ -3646,6 +4099,9 @@ public final class LegacyFdrsDeobfuscator {
             List<TryCatchBlockNode> group = entry.getValue();
             if (group.size() < 2) continue;
 
+            Integer handlerPos = labelPos.get(entry.getKey().handler);
+            if (handlerPos == null) continue;
+
             // Find the earliest start and latest end in instruction order
             LabelNode earliestStart = null;
             LabelNode latestEnd = null;
@@ -3661,6 +4117,7 @@ public final class LegacyFdrsDeobfuscator {
             }
 
             if (earliestStart == null || latestEnd == null || minPos >= maxPos) continue;
+            if (handlerPos > minPos && handlerPos < maxPos) continue;
 
             // Keep the first entry, update its range, remove the rest
             TryCatchBlockNode keeper = group.get(0);
@@ -3784,7 +4241,28 @@ public final class LegacyFdrsDeobfuscator {
             }
             if (changed && analyzerSucceeds(cn, mn)) return;
 
-            // Priority 2: Remove RuntimeException/Throwable/null-type entries one at a time
+            // Priority 2: If a cluster of broad handlers was injected together, removing them
+            // as a batch often restores a consistent stack map where one-by-one removal does not.
+            List<TryCatchBlockNode> broadHandlers = new ArrayList<>();
+            for (TryCatchBlockNode tcb : mn.tryCatchBlocks) {
+                String type = tcb.type;
+                if (type == null || type.equals("java/lang/RuntimeException") ||
+                    type.equals("java/lang/Throwable") || type.equals("java/lang/Exception")) {
+                    broadHandlers.add(tcb);
+                }
+            }
+            if (!broadHandlers.isEmpty()) {
+                List<TryCatchBlockNode> originalHandlers = new ArrayList<>(mn.tryCatchBlocks);
+                mn.tryCatchBlocks.removeAll(broadHandlers);
+                if (analyzerSucceeds(cn, mn)) {
+                    exnVerifyFixed += broadHandlers.size();
+                    return;
+                }
+                mn.tryCatchBlocks.clear();
+                mn.tryCatchBlocks.addAll(originalHandlers);
+            }
+
+            // Priority 3: Remove RuntimeException/Throwable/null-type entries one at a time
             changed = false;
             for (int i = mn.tryCatchBlocks.size() - 1; i >= 0; i--) {
                 TryCatchBlockNode tcb = mn.tryCatchBlocks.get(i);
@@ -3803,7 +4281,7 @@ public final class LegacyFdrsDeobfuscator {
             }
             if (changed && analyzerSucceeds(cn, mn)) return;
 
-            // Priority 3: Try removing ANY entry one at a time (last resort)
+            // Priority 4: Try removing ANY entry one at a time (last resort)
             changed = false;
             for (int i = mn.tryCatchBlocks.size() - 1; i >= 0; i--) {
                 TryCatchBlockNode removed = mn.tryCatchBlocks.remove(i);
@@ -4174,11 +4652,19 @@ public final class LegacyFdrsDeobfuscator {
             for (var entry : groups.entrySet()) {
                 // Find all label ranges in new order, merge into contiguous spans
                 List<int[]> ranges = new ArrayList<>(); // [start_pos, end_pos]
+                Integer handlerPos = labelPos.get(entry.getKey().handler);
                 for (TryCatchBlockNode tcb : entry.getValue()) {
                     Integer sp = labelPos.get(tcb.start);
                     Integer ep = labelPos.get(tcb.end);
                     if (sp == null || ep == null) continue;
                     int lo = Math.min(sp, ep), hi = Math.max(sp, ep);
+                    if (handlerPos != null) {
+                        if (lo >= handlerPos) continue;
+                        if (handlerPos > lo && handlerPos < hi) {
+                            hi = handlerPos;
+                        }
+                    }
+                    if (lo >= hi) continue;
                     ranges.add(new int[]{lo, hi});
                 }
                 if (ranges.isEmpty()) continue;
@@ -4188,7 +4674,7 @@ public final class LegacyFdrsDeobfuscator {
                 int[] cur2 = ranges.get(0);
                 for (int i2 = 1; i2 < ranges.size(); i2++) {
                     int[] r = ranges.get(i2);
-                    if (r[0] <= cur2[1] + 5) { // merge if within 5 insns (allow small gaps)
+                    if (r[0] <= cur2[1] + 1) {
                         cur2[1] = Math.max(cur2[1], r[1]);
                     } else {
                         merged.add(cur2);

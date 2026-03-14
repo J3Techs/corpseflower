@@ -152,6 +152,9 @@ public class ContextUnit {
     // collect classes
     for (int i = 0; i < classEntries.size(); i++) {
       StructClass cl = loader.apply(classEntries.get(i));
+      if (cl == null) {
+        continue;
+      }
       String entryName = decompiledData.getClassEntryName(cl, classEntries.get(i));
       if (entryName != null) {
         if (seen.add(cl.qualifiedName)) {

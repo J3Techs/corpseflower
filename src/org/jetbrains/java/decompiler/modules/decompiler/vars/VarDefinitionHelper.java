@@ -1460,6 +1460,10 @@ public class VarDefinitionHelper {
 
   private void iterateClashingNames(Statement stat, StructMethod mt, Map<Statement, Set<VarInMethod>> varDefinitions,
                                     Set<VarInMethod> liveVarDefs, Map<VarInMethod, String> nameMap, Set<String> seenMethods) {
+    if (stat == null) {
+      return;
+    }
+
     Set<VarInMethod> curVarDefs = new HashSet<>();
 
     boolean shouldRemoveAtEnd = false;
@@ -1476,9 +1480,11 @@ public class VarDefinitionHelper {
     if (stat instanceof IfStatement) {
       Set<VarInMethod> upDefs = new HashSet<>();
       BasicBlockStatement basic = stat.getBasichead();
-      for (Exprent exprent : basic.getExprents()) {
-        for (Exprent ex : exprent.getAllExprents(true, true)) {
-          iterateClashingExprent(basic, mt, varDefinitions, ex, liveVarDefs, upDefs, nameMap, seenMethods);
+      if (basic != null && basic.getExprents() != null) {
+        for (Exprent exprent : basic.getExprents()) {
+          for (Exprent ex : exprent.getAllExprents(true, true)) {
+            iterateClashingExprent(basic, mt, varDefinitions, ex, liveVarDefs, upDefs, nameMap, seenMethods);
+          }
         }
       }
 
@@ -1551,7 +1557,7 @@ public class VarDefinitionHelper {
     }
 
     for (Statement st : new HashSet<>(varDefinitions.keySet())) {
-      if (st.getParent() == stat) {
+      if (st != null && st.getParent() == stat) {
         clearStatement(varDefinitions, liveVarDefs, nameMap, st);
       }
     }

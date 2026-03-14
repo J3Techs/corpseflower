@@ -50,13 +50,20 @@ import java.util.Set;
   }
 */
 public class StructClass extends StructMember {
-  public static StructClass create(DataInputFullStream in, boolean own) throws IOException {
-    in.discard(4);
+  public static @Nullable StructClass create(DataInputFullStream in, boolean own) throws IOException {
+    int magic = in.readInt();
+    if (magic != 0xCAFEBABE) {
+      System.err.println("[Corpseflower] WARN: Skipping class with invalid magic 0x" + Integer.toHexString(magic));
+      return null;
+    }
     int minorVersion = in.readUnsignedShort();
     int majorVersion = in.readUnsignedShort();
     BytecodeVersion bytecodeVersion = new BytecodeVersion(majorVersion, minorVersion);
 
     ConstantPool pool = new ConstantPool(in);
+    if (!pool.isValid()) {
+      return null;
+    }
 
     int accessFlags = in.readUnsignedShort();
     int thisClassIdx = in.readUnsignedShort();

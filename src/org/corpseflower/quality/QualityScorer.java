@@ -1,24 +1,48 @@
 package org.corpseflower.quality;
 
 public final class QualityScorer {
+  private static final String[] FAILURE_MARKERS = {
+    "// $VF: Couldn't be decompiled",
+    "$VF: Unable to decompile class",
+    "Exception decompiling",
+    "/* Exception decompiling",
+    "This method has failed to decompile"
+  };
+
   public Score score(String source) {
     if (source == null || source.isBlank()) {
       return new Score(0, Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MIN_VALUE);
     }
 
-    int stubCount = count(source, "Exception decompiling")
-      + count(source, "$VF: Couldn't be decompiled")
-      + count(source, "$VF: Unable to decompile class");
-    int completeness = stubCount == 0 ? 100 : 0;
-    int artifactCount = count(source, "while (true)")
-      + count(source, "% 2")
-      + count(source, "goto ")
-      + count(source, "label");
+    int stubCount = 0;
+    for (String marker : FAILURE_MARKERS) {
+      stubCount += count(source, marker);
+    }
+    if (stubCount > 0) {
+      return new Score(0, 0, 0, stubCount, 0);
+    }
+
+    int completeness = Math.max(0, 100 - emptyBodyCount(source) * 5 - rawDumpCount(source) * 20);
+    int artifactCount = rawDumpCount(source);
     int maxDepth = nestingDepth(source);
     int statementCount = count(source, ";");
     int readabilityPenalty = maxDepth * 4 + (statementCount / 50);
-    int total = completeness * 100 - artifactCount * 10 - readabilityPenalty - stubCount * 200;
+    int total = completeness * 100 - artifactCount * 25 - readabilityPenalty;
     return new Score(completeness, artifactCount, readabilityPenalty, stubCount, total);
+  }
+
+  public boolean hasFailureMarkers(String source) {
+    if (source == null || source.isBlank()) {
+      return true;
+    }
+
+    for (String marker : FAILURE_MARKERS) {
+      if (source.contains(marker)) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private int count(String haystack, String needle) {
@@ -44,6 +68,14 @@ public final class QualityScorer {
       }
     }
     return maxDepth;
+  }
+
+  private int emptyBodyCount(String source) {
+    return count(source, "{\n    }") + count(source, "{\r\n    }") + count(source, "{ }");
+  }
+
+  private int rawDumpCount(String source) {
+    return count(source, "lbl") + count(source, "bytecode offset") + count(source, "goto ");
   }
 
   public record Score(int completeness, int artifacts, int readabilityPenalty, int stubCount, int total) {

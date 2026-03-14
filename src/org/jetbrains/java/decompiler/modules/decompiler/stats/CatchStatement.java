@@ -18,6 +18,8 @@ import org.jetbrains.java.decompiler.util.TextBuffer;
 
 import java.util.ArrayList;
 import java.util.BitSet;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -25,6 +27,7 @@ public class CatchStatement extends Statement {
   private final List<List<String>> exctstrings = new ArrayList<>();
   private final List<VarExprent> vars = new ArrayList<>();
   private final List<Exprent> resources = new ArrayList<>();
+  private final Set<Statement> externalCatchAlls = new LinkedHashSet<>();
 
   // *****************************************************************************
   // constructors
@@ -70,6 +73,7 @@ public class CatchStatement extends Statement {
 
     Set<Statement> setHandlers = DecHelper.getUniquePredExceptions(head);
     if (!setHandlers.isEmpty()) {
+      Set<Statement> externalCatchAlls = new HashSet<>();
       int hnextcount = 0; // either no statements with connection to next, or more than 1
 
       Statement next = null;
@@ -105,6 +109,11 @@ public class CatchStatement extends Statement {
             }
           }
         } else {
+          if (edge.getExceptions() == null && setHandlers.contains(stat) && stat.getLastBasicType() == LastBasicType.GENERAL) {
+            // Mixed try/catch/finally bytecode often materializes as typed catches plus an outer catch-all cleanup handler.
+            // Ignore that outer handler while matching the inner typed catch so it can be wrapped into a catch-all/finally later.
+            externalCatchAlls.add(stat);
+          }
           handlerok = false;
         }
 
@@ -128,8 +137,10 @@ public class CatchStatement extends Statement {
           return null;
         }
 
-        if (DecHelper.checkStatementExceptions(lst)) {
-          return new CatchStatement(head, next, setHandlers);
+        if (DecHelper.checkStatementExceptions(lst, externalCatchAlls)) {
+          CatchStatement statement = new CatchStatement(head, next, setHandlers);
+          statement.externalCatchAlls.addAll(externalCatchAlls);
+          return statement;
         }
       }
     }
@@ -217,6 +228,24 @@ public class CatchStatement extends Statement {
     }
 
     return cs;
+  }
+
+  @Override
+  protected void onNodeCollapse() {
+    if (this.externalCatchAlls.isEmpty()) {
+      return;
+    }
+
+    for (StatEdge edge : new ArrayList<>(this.first.getSuccessorEdges(StatEdge.TYPE_EXCEPTION))) {
+      if (!this.externalCatchAlls.contains(edge.getDestination())) {
+        continue;
+      }
+
+      this.first.removeSuccessor(edge);
+      this.addSuccessor(new StatEdge(this, edge.getDestination(), edge.getExceptions()));
+    }
+
+    this.externalCatchAlls.clear();
   }
 
   public void getOffset(BitSet values) {

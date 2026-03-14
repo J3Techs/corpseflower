@@ -23,6 +23,7 @@ public class ConstantPool implements NewClassNameBuilder {
 
   private final List<PooledConstant> pool;
   private final PoolInterceptor interceptor;
+  private boolean valid = true;
 
   public ConstantPool(DataInputStream in) throws IOException {
     int size = in.readUnsignedShort();
@@ -90,7 +91,10 @@ public class ConstantPool implements NewClassNameBuilder {
           break;
 
         default:
-          throw new RuntimeException("Invalid Constant Pool entry #" + i + " Type: " + tag);
+          valid = false;
+          System.err.println("[Corpseflower] WARN: Skipping class with invalid constant pool entry #" + i + " type=" + tag);
+          interceptor = DecompilerContext.getPoolInterceptor();
+          return;
       }
     }
 
@@ -198,6 +202,10 @@ public class ConstantPool implements NewClassNameBuilder {
 
   public List<PooledConstant> getPool() {
     return pool;
+  }
+
+  public boolean isValid() {
+    return valid;
   }
 
   private String buildNewDescriptor(boolean isField, String descriptor) {

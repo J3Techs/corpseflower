@@ -116,6 +116,7 @@ public class JrtFinder {
           ModuleDescriptor descriptor;
           try (final InputStream is = Files.newInputStream(module.resolve("module-info.class"))) {
             StructClass clazz = StructClass.create(new DataInputFullStream(is.readAllBytes()), false);
+            if (clazz == null) continue;
             StructModuleAttribute moduleAttr = clazz.getAttribute(StructGeneralAttribute.ATTRIBUTE_MODULE);
             if (moduleAttr == null) continue;
 

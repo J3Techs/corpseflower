@@ -17,6 +17,7 @@ import org.jetbrains.java.decompiler.struct.match.IMatchable;
 import org.jetbrains.java.decompiler.struct.match.MatchEngine;
 import org.jetbrains.java.decompiler.struct.match.MatchNode;
 import org.jetbrains.java.decompiler.struct.match.MatchNode.RuleValue;
+import org.jetbrains.java.decompiler.util.DotExporter;
 import org.jetbrains.java.decompiler.util.StartEndPair;
 import org.jetbrains.java.decompiler.util.TextBuffer;
 import org.jetbrains.java.decompiler.util.collections.VBStyleCollection;
@@ -458,6 +459,12 @@ public abstract class Statement implements IMatchable {
     }
 
     if (res.size() != stats.size()) {
+      if (DotExporter.DUMP_ERROR_DOTS) {
+        try {
+          DotExporter.errorToDotFile(this, "postReverseFail_" + this.id);
+        } catch (Throwable ignored) {
+        }
+      }
       throw new RuntimeException("computing post reverse post order failed!");
     }
 

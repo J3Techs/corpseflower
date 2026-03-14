@@ -1,12 +1,13 @@
 package org.corpseflower.quality;
 
 import org.benf.cfr.reader.api.CfrDriver;
+import org.benf.cfr.reader.api.ClassFileSource;
 import org.benf.cfr.reader.api.OutputSinkFactory;
 import org.benf.cfr.reader.api.OutputSinkFactory.Sink;
 import org.benf.cfr.reader.api.OutputSinkFactory.SinkClass;
 import org.benf.cfr.reader.api.OutputSinkFactory.SinkType;
 import org.benf.cfr.reader.api.SinkReturns;
-import org.benf.cfr.reader.Main;
+import org.benf.cfr.reader.bytecode.analysis.parse.utils.Pair;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -18,13 +19,50 @@ import java.util.List;
 import java.util.Map;
 
 public final class CfrBridge {
-  public Result decompile(Path inputJar, Path outputDir, boolean verbose) throws IOException {
+  private static final String IN_MEMORY_JAR = "corpseflower-input.jar";
+
+  public Result decompile(Map<String, byte[]> classBytes, Path outputDir, boolean verbose) throws IOException {
     Files.createDirectories(outputDir);
+    if (classBytes.isEmpty()) {
+      System.err.println("[Corpseflower] WARN: No class bytes available for CFR benchmark");
+      return new Result(0, 0);
+    }
+
     List<String> exceptions = new ArrayList<>();
 
     Map<String, String> options = new HashMap<>();
     options.put("forcetopsort", "true");
     options.put("silent", verbose ? "false" : "true");
+
+    Map<String, byte[]> classBytesByPath = new HashMap<>();
+    for (Map.Entry<String, byte[]> entry : classBytes.entrySet()) {
+      classBytesByPath.put(entry.getKey() + ".class", entry.getValue());
+    }
+
+    ClassFileSource source = new ClassFileSource() {
+      @Override
+      public void informAnalysisRelativePathDetail(String usePath, String classFilePath) {
+      }
+
+      @Override
+      public Collection<String> addJar(String jarPath) {
+        return classBytesByPath.keySet();
+      }
+
+      @Override
+      public String getPossiblyRenamedPath(String path) {
+        return path;
+      }
+
+      @Override
+      public Pair<byte[], String> getClassFileContent(String path) throws IOException {
+        byte[] bytes = classBytesByPath.get(path);
+        if (bytes == null) {
+          throw new IOException("Missing in-memory class for " + path);
+        }
+        return Pair.make(bytes, path);
+      }
+    };
 
     OutputSinkFactory sinkFactory = new OutputSinkFactory() {
       @Override
@@ -77,19 +115,14 @@ public final class CfrBridge {
 
     CfrDriver driver = new CfrDriver.Builder()
       .withOptions(options)
+      .withClassFileSource(source)
       .withOutputSink(sinkFactory)
       .build();
-    driver.analyse(List.of(inputJar.toString()));
+    driver.analyse(List.of(IN_MEMORY_JAR));
 
     int javaFileCount = countJavaFiles(outputDir);
     if (javaFileCount == 0) {
-      Main.main(new String[]{
-        inputJar.toString(),
-        "--outputdir", outputDir.toString(),
-        "--forcetopsort", "true",
-        "--silent", verbose ? "false" : "true"
-      });
-      javaFileCount = countJavaFiles(outputDir);
+      System.err.println("[Corpseflower] WARN: CFR API produced no Java output for in-memory benchmark input");
     }
 
     return new Result(exceptions.size(), javaFileCount);

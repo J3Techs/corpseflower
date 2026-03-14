@@ -35,6 +35,9 @@ public class StructContext {
           try (final InputStream stream = StructContext.class.getResourceAsStream("StructContext.class")) {
             byte[] data = stream.readAllBytes();
             SENTINEL_CLASS = StructClass.create(new DataInputFullStream(data), false);
+            if (SENTINEL_CLASS == null) {
+              throw new IllegalStateException("Unable to initialize sentinel class");
+            }
           } catch (final IOException ex) {
             throw new UncheckedIOException(ex);
           }
@@ -54,6 +57,8 @@ public class StructContext {
   private final Map<String, String> badlyPlacedClasses = new ConcurrentHashMap<>(); // original -> corrected
   private final Map<String, ContextUnit> unitsByClassName = new ConcurrentHashMap<>();
   private final Map<String, List<String>> abstractNames = new HashMap<>();
+  private final Map<String, byte[]> ownClassOverrides = new ConcurrentHashMap<>();
+  private final Set<String> removedOwnClasses = ConcurrentHashMap.newKeySet();
   
   private final PluginContext pluginContext = new PluginContext();
 
@@ -108,11 +113,15 @@ public class StructContext {
   private StructClass tryLoadClass(final ContextUnit unitForClass, final String key) {
     try {
       DecompilerContext.getLogger().writeMessage("Loading Class: " + key + " from " + unitForClass.getName(), IFernflowerLogger.Severity.INFO);
-      final byte[] classBytes = unitForClass.getClassBytes(key);
+      final byte[] classBytes = getClassBytes(unitForClass, key);
       if (classBytes == null) {
         return null;
       }
       StructClass clazz = StructClass.create(new DataInputFullStream(classBytes), unitForClass.isOwn());
+      if (clazz == null) {
+        DecompilerContext.getLogger().writeMessage("Skipping unreadable class " + key + " from " + unitForClass.getName(), IFernflowerLogger.Severity.WARN);
+        return null;
+      }
       if (!key.equals(clazz.qualifiedName)) {
         // also place the class in the right key if it's wrong
         this.unitsByClassName.put(clazz.qualifiedName, unitForClass);
@@ -124,6 +133,19 @@ public class StructContext {
     }
 
     return null;
+  }
+
+  private byte[] getClassBytes(ContextUnit unitForClass, String key) throws IOException {
+    if (unitForClass.isOwn()) {
+      if (removedOwnClasses.contains(key)) {
+        return null;
+      }
+      byte[] override = ownClassOverrides.get(key);
+      if (override != null) {
+        return override;
+      }
+    }
+    return unitForClass.getClassBytes(key);
   }
 
   public boolean hasClass(final String name) {
@@ -148,7 +170,8 @@ public class StructContext {
     return this.units.stream()
       .filter(ContextUnit::isOwn)
       .flatMap(unit -> unit.getClassNames().stream())
-      .map(name -> Objects.requireNonNull(this.getClass(name), () -> "Could not find class " + name))
+      .map(this::getClass)
+      .filter(Objects::nonNull)
       .collect(Collectors.toUnmodifiableList());
   }
 
@@ -251,8 +274,59 @@ public class StructContext {
   public PluginContext getPluginContext() {
     return this.pluginContext;
   }
-  
+
+  public Map<String, byte[]> getOwnClassBytesSnapshot() {
+    Map<String, byte[]> snapshot = new LinkedHashMap<>();
+    for (ContextUnit unit : this.units) {
+      if (!unit.isOwn()) {
+        continue;
+      }
+      for (String className : unit.getClassNames()) {
+        try {
+          byte[] classBytes = getClassBytes(unit, className);
+          if (classBytes != null) {
+            snapshot.put(className, classBytes);
+          }
+        } catch (IOException ex) {
+          DecompilerContext.getLogger().writeMessage("Failed to read class " + className + " from " + unit.getName(), IFernflowerLogger.Severity.ERROR, ex);
+        }
+      }
+    }
+    return snapshot;
+  }
+
+  public void replaceOwnClasses(Map<String, byte[]> transformedClasses) {
+    ownClassOverrides.clear();
+    ownClassOverrides.putAll(transformedClasses);
+    removedOwnClasses.clear();
+
+    for (ContextUnit unit : this.units) {
+      if (!unit.isOwn()) {
+        continue;
+      }
+      for (String className : unit.getClassNames()) {
+        if (!transformedClasses.containsKey(className)) {
+          removedOwnClasses.add(className);
+        }
+      }
+    }
+
+    classes.entrySet().removeIf(entry -> {
+      ContextUnit unit = unitsByClassName.get(entry.getKey());
+      return unit != null && unit.isOwn();
+    });
+    badlyPlacedClasses.clear();
+  }
+
   private void initUnit(final ContextUnit unit) {
+    indexUnit(unit);
+
+    for (final IContextSource child : unit.getChildContexts()) {
+      this.addSpace(child, unit.isOwn(), false);
+    }
+  }
+
+  private void indexUnit(final ContextUnit unit) {
     DecompilerContext.getLogger().writeMessage("Scanning classes from " + unit.getName(), IFernflowerLogger.Severity.INFO);
     boolean isOwn = unit.isOwn();
     for (final String clazz : unit.getClassNames()) {
@@ -267,10 +341,6 @@ public class StructContext {
       if (isOwn) { // pre-load classes
         this.getClass(clazz);
       }
-    }
-
-    for (final IContextSource child : unit.getChildContexts()) {
-      this.addSpace(child, isOwn, false);
     }
   }
 

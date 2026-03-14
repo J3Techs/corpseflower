@@ -3,6 +3,9 @@ package org.jetbrains.java.decompiler.main;
 
 import java.io.IOException;
 
+import org.corpseflower.CorpseflowerPreferences;
+import org.corpseflower.deobfuscation.DeobfuscationStage;
+import org.corpseflower.deobfuscation.PreDecompileContext;
 import org.jetbrains.java.decompiler.api.plugin.LanguageSpec;
 import org.jetbrains.java.decompiler.api.plugin.Plugin;
 import org.jetbrains.java.decompiler.main.ClassesProcessor.ClassNode;
@@ -30,12 +33,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.nio.file.Path;
 
 public class Fernflower implements IDecompiledData {
   private final StructContext structContext;
   private final ClassesProcessor classProcessor;
   private final IIdentifierRenamer helper;
   private final IdentifierConverter converter;
+  private DeobfuscationStage.Result preDecompileResult = DeobfuscationStage.passthrough(null);
 
   public Fernflower(IResultSaver saver, Map<String, Object> customProperties, IFernflowerLogger logger) {
     this(null, saver, customProperties, logger);
@@ -142,6 +147,12 @@ public class Fernflower implements IDecompiledData {
   }
 
   public void decompileContext() {
+    Object inputPath = DecompilerContext.getProperty(CorpseflowerPreferences.INPUT_PATH);
+    Path inputJar = inputPath == null || inputPath.toString().isBlank() ? null : Path.of(inputPath.toString());
+    PreDecompileContext preCtx = new PreDecompileContext(structContext, inputJar);
+    structContext.getPluginContext().runPreDecompilePasses(org.jetbrains.java.decompiler.api.java.JavaPassLocation.PRE_DECOMPILE, preCtx);
+    preDecompileResult = preCtx.getResult();
+
     if (converter != null) {
       converter.rename();
     }
@@ -149,6 +160,14 @@ public class Fernflower implements IDecompiledData {
     classProcessor.loadClasses(helper);
 
     structContext.saveContext();
+  }
+
+  public DeobfuscationStage.Result getPreDecompileResult() {
+    return preDecompileResult;
+  }
+
+  public Map<String, byte[]> getOwnClassBytesSnapshot() {
+    return structContext.getOwnClassBytesSnapshot();
   }
 
   public void addWhitelist(String prefix) {

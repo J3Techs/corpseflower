@@ -13,6 +13,7 @@ import org.jetbrains.java.decompiler.modules.decompiler.decompose.GenericDominat
 import org.jetbrains.java.decompiler.modules.decompiler.decompose.IGraph;
 import org.jetbrains.java.decompiler.modules.decompiler.decompose.IGraphNode;
 import org.jetbrains.java.decompiler.struct.StructClass;
+import org.jetbrains.java.decompiler.struct.consts.LinkConstant;
 import org.jetbrains.java.decompiler.util.InterpreterUtil;
 
 import java.util.*;
@@ -209,6 +210,360 @@ public final class ExceptionDeobfuscator {
         graph.addComment("$VF: Removed empty exception range");
       }
     }
+  }
+
+  public static void splitCleanupCloseBlocks(ControlFlowGraph graph, StructClass cl) {
+    List<BasicBlock> snapshot = new ArrayList<>();
+    for (BasicBlock block : graph.getBlocks()) {
+      snapshot.add(block);
+    }
+
+    for (BasicBlock block : snapshot) {
+      int cleanupStart = getCleanupCloseSuffixStart(block, cl);
+      if (cleanupStart <= 0) {
+        continue;
+      }
+
+      splitBlockTail(graph, block, cleanupStart);
+    }
+  }
+
+  public static void removeNonThrowingExceptionEdges(ControlFlowGraph graph, StructClass cl) {
+    List<ExceptionRangeCFG> ranges = graph.getExceptions();
+    for (int i = ranges.size() - 1; i >= 0; i--) {
+      ExceptionRangeCFG range = ranges.get(i);
+      List<BasicBlock> snapshot = new ArrayList<>(range.getProtectedRange());
+      for (BasicBlock block : snapshot) {
+        if (canBlockThrow(block, cl)) {
+          continue;
+        }
+
+        range.getProtectedRange().remove(block);
+        block.removeSuccessorException(range.getHandler());
+      }
+
+      if (range.getProtectedRange().isEmpty()) {
+        ranges.remove(i);
+      }
+    }
+  }
+
+  public static void removeRedundantCleanupCloseBlocks(ControlFlowGraph graph, StructClass cl) {
+    List<BasicBlock> snapshot = new ArrayList<>();
+    for (BasicBlock block : graph.getBlocks()) {
+      snapshot.add(block);
+    }
+
+    for (BasicBlock block : snapshot) {
+      if (!graph.getBlocks().containsKey(block.id) || block.getSuccs().size() != 1 || !block.getSuccExceptions().isEmpty()) {
+        continue;
+      }
+
+      Integer varIndex = getCleanupCloseVarIndex(block, cl);
+      if (varIndex == null || !hasDuplicateCleanupClose(block.getSuccs().get(0), varIndex, cl)) {
+        continue;
+      }
+
+      BasicBlock successor = block.getSuccs().get(0);
+      for (BasicBlock predecessor : new ArrayList<>(block.getPreds())) {
+        predecessor.replaceSuccessor(block, successor);
+      }
+
+      graph.removeBlock(block);
+    }
+  }
+
+  private static boolean canBlockThrow(BasicBlock block, StructClass cl) {
+    InstructionSequence seq = block.getSeq();
+    if (seq.isEmpty()) {
+      // Keep synthetic empty blocks conservative. They are often structural artifacts.
+      return true;
+    }
+
+    if (isSyntheticCleanupCloseBlock(block, cl)) {
+      return false;
+    }
+
+    for (Instruction instruction : seq) {
+      if (canInstructionThrow(instruction)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private static int getCleanupCloseSuffixStart(BasicBlock block, StructClass cl) {
+    if (block.getSuccExceptions().isEmpty()) {
+      return -1;
+    }
+
+    InstructionSequence seq = block.getSeq();
+    int length = seq.length();
+    if (length < 2) {
+      return -1;
+    }
+
+    if (isReturnInstruction(seq.getLastInstr())
+        && length >= 3
+        && seq.getInstr(length - 3).opcode == CodeConstants.opc_aload
+        && isCleanupCloseInvocation(seq.getInstr(length - 2), cl)) {
+      return length - 3;
+    }
+
+    if (seq.getInstr(length - 2).opcode == CodeConstants.opc_aload
+        && isCleanupCloseInvocation(seq.getInstr(length - 1), cl)) {
+      return length - 2;
+    }
+
+    return -1;
+  }
+
+  private static Integer getCleanupCloseVarIndex(BasicBlock block, StructClass cl) {
+    InstructionSequence seq = block.getSeq();
+    if (seq.length() < 2 || seq.length() > 3) {
+      return null;
+    }
+
+    int invokeIndex = seq.length() == 3 ? 1 : seq.length() - 1;
+    int loadIndex = invokeIndex - 1;
+    if (loadIndex < 0 || seq.getInstr(loadIndex).opcode != CodeConstants.opc_aload) {
+      return null;
+    }
+
+    if (seq.length() == 3 && !isReturnInstruction(seq.getLastInstr())) {
+      return null;
+    }
+
+    if (!isCleanupCloseInvocation(seq.getInstr(invokeIndex), cl)) {
+      return null;
+    }
+
+    return seq.getInstr(loadIndex).operand(0);
+  }
+
+  private static boolean isSyntheticCleanupCloseBlock(BasicBlock block, StructClass cl) {
+    Integer varIndex = getCleanupCloseVarIndex(block, cl);
+    if (varIndex == null) {
+      return false;
+    }
+
+    InstructionSequence seq = block.getSeq();
+    return hasNullGuardPredecessor(block) || isReturnInstruction(seq.getLastInstr()) || hasCleanupSuccessor(block);
+  }
+
+  private static boolean hasDuplicateCleanupClose(BasicBlock start, int varIndex, StructClass cl) {
+    Deque<BasicBlock> work = new ArrayDeque<>();
+    Set<BasicBlock> seen = new HashSet<>();
+    work.add(start);
+
+    while (!work.isEmpty()) {
+      BasicBlock block = work.removeFirst();
+      if (!seen.add(block)) {
+        continue;
+      }
+
+      Integer loadedVar = getCleanupCloseVarIndex(block, cl);
+      if (loadedVar != null) {
+        if (loadedVar == varIndex) {
+          return true;
+        }
+
+        work.addAll(block.getSuccs());
+        continue;
+      }
+
+      if (isNullGuardBlock(block)) {
+        work.addAll(block.getSuccs());
+        continue;
+      }
+
+      if (block.getSeq().isEmpty() || isReturnInstruction(block.getSeq().getLastInstr())) {
+        continue;
+      }
+
+      return false;
+    }
+
+    return false;
+  }
+
+  private static boolean hasNullGuardPredecessor(BasicBlock block) {
+    for (BasicBlock predecessor : block.getPreds()) {
+      InstructionSequence predecessorSeq = predecessor.getSeq();
+      if (predecessorSeq.isEmpty()) {
+        continue;
+      }
+
+      int opcode = predecessorSeq.getLastInstr().opcode;
+      if (opcode == CodeConstants.opc_ifnull || opcode == CodeConstants.opc_ifnonnull) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private static boolean hasCleanupSuccessor(BasicBlock block) {
+    if (block.getSuccs().size() != 1) {
+      return false;
+    }
+
+    InstructionSequence successorSeq = block.getSuccs().get(0).getSeq();
+    if (successorSeq.isEmpty()) {
+      return true;
+    }
+
+    Instruction last = successorSeq.getLastInstr();
+    if (last.opcode == CodeConstants.opc_ifnull || last.opcode == CodeConstants.opc_ifnonnull) {
+      return true;
+    }
+
+    return isReturnInstruction(last);
+  }
+
+  private static boolean isNullGuardBlock(BasicBlock block) {
+    InstructionSequence seq = block.getSeq();
+    if (seq.length() != 2 || seq.getInstr(0).opcode != CodeConstants.opc_aload) {
+      return false;
+    }
+
+    int opcode = seq.getLastInstr().opcode;
+    return opcode == CodeConstants.opc_ifnull || opcode == CodeConstants.opc_ifnonnull;
+  }
+
+  private static boolean isCleanupCloseInvocation(Instruction instruction, StructClass cl) {
+    if (instruction.opcode != CodeConstants.opc_invokevirtual && instruction.opcode != CodeConstants.opc_invokeinterface) {
+      return false;
+    }
+
+    LinkConstant link = cl.getPool().getLinkConstant(instruction.operand(0));
+    if (link == null || !"close".equals(link.elementname) || !"()V".equals(link.descriptor)) {
+      return false;
+    }
+
+    if (link.classname != null && link.classname.startsWith("java/io/")) {
+      return true;
+    }
+
+    try {
+      return DecompilerContext.getStructContext().instanceOf(link.classname, "java/lang/AutoCloseable");
+    }
+    catch (RuntimeException ignored) {
+      return false;
+    }
+  }
+
+  private static boolean isReturnInstruction(Instruction instruction) {
+    if (instruction == null) {
+      return false;
+    }
+
+    int opcode = instruction.opcode;
+    return opcode >= CodeConstants.opc_ireturn && opcode <= CodeConstants.opc_return;
+  }
+
+  private static void splitBlockTail(ControlFlowGraph graph, BasicBlock block, int splitIndex) {
+    InstructionSequence source = block.getSeq();
+    SimpleInstructionSequence tail = new SimpleInstructionSequence();
+    LinkedList<Integer> tailOffsets = new LinkedList<>();
+    List<Integer> sourceOffsets = block.getInstrOldOffsets();
+
+    for (int i = source.length() - 1; i >= splitIndex; i--) {
+      tail.addInstruction(0, source.getInstr(i), -1);
+      tailOffsets.addFirst(block.getOldOffset(i));
+      source.removeInstruction(i);
+      if (i < sourceOffsets.size()) {
+        sourceOffsets.remove(i);
+      }
+    }
+
+    BasicBlock tailBlock = new BasicBlock(++graph.last_id);
+    tailBlock.setSeq(tail);
+    tailBlock.getInstrOldOffsets().addAll(tailOffsets);
+
+    List<BasicBlock> successors = new ArrayList<>(block.getSuccs());
+    for (BasicBlock successor : successors) {
+      block.removeSuccessor(successor);
+      tailBlock.addSuccessor(successor);
+    }
+
+    block.addSuccessor(tailBlock);
+    graph.getBlocks().addWithKey(tailBlock, tailBlock.id);
+
+    if (graph.getFinallyExits().remove(block)) {
+      graph.getFinallyExits().add(tailBlock);
+    }
+
+    List<BasicBlock> exceptionSuccessors = new ArrayList<>(block.getSuccExceptions());
+    for (BasicBlock handler : exceptionSuccessors) {
+      tailBlock.addSuccessorException(handler);
+
+      ExceptionRangeCFG range = graph.getExceptionRange(handler, block);
+      if (range != null && !range.getProtectedRange().contains(tailBlock)) {
+        range.getProtectedRange().add(tailBlock);
+      }
+    }
+  }
+
+  private static boolean canInstructionThrow(Instruction instruction) {
+    int op = instruction.opcode;
+    return switch (op) {
+      case CodeConstants.opc_nop, CodeConstants.opc_aconst_null,
+           CodeConstants.opc_iconst_m1, CodeConstants.opc_iconst_0, CodeConstants.opc_iconst_1,
+           CodeConstants.opc_iconst_2, CodeConstants.opc_iconst_3, CodeConstants.opc_iconst_4, CodeConstants.opc_iconst_5,
+           CodeConstants.opc_lconst_0, CodeConstants.opc_lconst_1,
+           CodeConstants.opc_fconst_0, CodeConstants.opc_fconst_1, CodeConstants.opc_fconst_2,
+           CodeConstants.opc_dconst_0, CodeConstants.opc_dconst_1,
+           CodeConstants.opc_bipush, CodeConstants.opc_sipush, CodeConstants.opc_ldc, CodeConstants.opc_ldc_w, CodeConstants.opc_ldc2_w,
+           CodeConstants.opc_iload, CodeConstants.opc_lload, CodeConstants.opc_fload, CodeConstants.opc_dload, CodeConstants.opc_aload,
+           CodeConstants.opc_iload_0, CodeConstants.opc_iload_1, CodeConstants.opc_iload_2, CodeConstants.opc_iload_3,
+           CodeConstants.opc_lload_0, CodeConstants.opc_lload_1, CodeConstants.opc_lload_2, CodeConstants.opc_lload_3,
+           CodeConstants.opc_fload_0, CodeConstants.opc_fload_1, CodeConstants.opc_fload_2, CodeConstants.opc_fload_3,
+           CodeConstants.opc_dload_0, CodeConstants.opc_dload_1, CodeConstants.opc_dload_2, CodeConstants.opc_dload_3,
+           CodeConstants.opc_aload_0, CodeConstants.opc_aload_1, CodeConstants.opc_aload_2, CodeConstants.opc_aload_3,
+           CodeConstants.opc_istore, CodeConstants.opc_lstore, CodeConstants.opc_fstore, CodeConstants.opc_dstore, CodeConstants.opc_astore,
+           CodeConstants.opc_istore_0, CodeConstants.opc_istore_1, CodeConstants.opc_istore_2, CodeConstants.opc_istore_3,
+           CodeConstants.opc_lstore_0, CodeConstants.opc_lstore_1, CodeConstants.opc_lstore_2, CodeConstants.opc_lstore_3,
+           CodeConstants.opc_fstore_0, CodeConstants.opc_fstore_1, CodeConstants.opc_fstore_2, CodeConstants.opc_fstore_3,
+           CodeConstants.opc_dstore_0, CodeConstants.opc_dstore_1, CodeConstants.opc_dstore_2, CodeConstants.opc_dstore_3,
+           CodeConstants.opc_astore_0, CodeConstants.opc_astore_1, CodeConstants.opc_astore_2, CodeConstants.opc_astore_3,
+           CodeConstants.opc_pop, CodeConstants.opc_pop2,
+           CodeConstants.opc_dup, CodeConstants.opc_dup_x1, CodeConstants.opc_dup_x2,
+           CodeConstants.opc_dup2, CodeConstants.opc_dup2_x1, CodeConstants.opc_dup2_x2,
+           CodeConstants.opc_swap,
+           CodeConstants.opc_iadd, CodeConstants.opc_ladd, CodeConstants.opc_fadd, CodeConstants.opc_dadd,
+           CodeConstants.opc_isub, CodeConstants.opc_lsub, CodeConstants.opc_fsub, CodeConstants.opc_dsub,
+           CodeConstants.opc_imul, CodeConstants.opc_lmul, CodeConstants.opc_fmul, CodeConstants.opc_dmul,
+           CodeConstants.opc_fdiv, CodeConstants.opc_ddiv, CodeConstants.opc_frem, CodeConstants.opc_drem,
+           CodeConstants.opc_ineg, CodeConstants.opc_lneg, CodeConstants.opc_fneg, CodeConstants.opc_dneg,
+           CodeConstants.opc_ishl, CodeConstants.opc_lshl, CodeConstants.opc_ishr, CodeConstants.opc_lshr,
+           CodeConstants.opc_iushr, CodeConstants.opc_lushr,
+           CodeConstants.opc_iand, CodeConstants.opc_land, CodeConstants.opc_ior, CodeConstants.opc_lor,
+           CodeConstants.opc_ixor, CodeConstants.opc_lxor,
+           CodeConstants.opc_iinc,
+           CodeConstants.opc_i2l, CodeConstants.opc_i2f, CodeConstants.opc_i2d,
+           CodeConstants.opc_l2i, CodeConstants.opc_l2f, CodeConstants.opc_l2d,
+           CodeConstants.opc_f2i, CodeConstants.opc_f2l, CodeConstants.opc_f2d,
+           CodeConstants.opc_d2i, CodeConstants.opc_d2l, CodeConstants.opc_d2f,
+           CodeConstants.opc_i2b, CodeConstants.opc_i2c, CodeConstants.opc_i2s,
+           CodeConstants.opc_lcmp, CodeConstants.opc_fcmpl, CodeConstants.opc_fcmpg,
+           CodeConstants.opc_dcmpl, CodeConstants.opc_dcmpg,
+           CodeConstants.opc_ifeq, CodeConstants.opc_ifne, CodeConstants.opc_iflt,
+           CodeConstants.opc_ifge, CodeConstants.opc_ifgt, CodeConstants.opc_ifle,
+           CodeConstants.opc_if_icmpeq, CodeConstants.opc_if_icmpne, CodeConstants.opc_if_icmplt,
+           CodeConstants.opc_if_icmpge, CodeConstants.opc_if_icmpgt, CodeConstants.opc_if_icmple,
+           CodeConstants.opc_if_acmpeq, CodeConstants.opc_if_acmpne,
+           CodeConstants.opc_goto, CodeConstants.opc_goto_w,
+           CodeConstants.opc_jsr, CodeConstants.opc_jsr_w, CodeConstants.opc_ret,
+           CodeConstants.opc_tableswitch, CodeConstants.opc_lookupswitch,
+           CodeConstants.opc_ireturn, CodeConstants.opc_lreturn, CodeConstants.opc_freturn,
+           CodeConstants.opc_dreturn, CodeConstants.opc_areturn, CodeConstants.opc_return,
+           CodeConstants.opc_instanceof,
+           CodeConstants.opc_ifnull, CodeConstants.opc_ifnonnull,
+           CodeConstants.opc_getstatic, CodeConstants.opc_putstatic -> false;
+      default -> true;
+    };
   }
 
   public static void removeCircularRanges(final ControlFlowGraph graph) {

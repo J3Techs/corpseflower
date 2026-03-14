@@ -66,29 +66,44 @@ final class CorpseflowerRunner {
   }
 
   private JarRunSummary processJar(Path inputJar, Path outputDir, boolean printPerJarSummary) throws Exception {
-    Result deobfuscation = DeobfuscationStage.maybeRun(inputJar, options.deobfuscate(), options.verbose());
-    Path vineflowerDir = options.qualityGate() ? Files.createTempDirectory("corpseflower-vf-") : outputDir;
+    DecompileOutcome outcome = new DecompileOutcome(DeobfuscationStage.passthrough(inputJar), Map.of());
+    Result deobfuscation = outcome.deobfuscation();
+    Path corpseflowerDir = options.qualityGate() ? Files.createTempDirectory("corpseflower-out-") : outputDir;
     Path cfrDir = options.qualityGate() ? Files.createTempDirectory("corpseflower-cfr-") : null;
     MergeResult mergeResult = new MergeResult(0, 0, 0);
+    boolean decompileFailed = false;
     try {
-      prepareOutputDirectory(vineflowerDir);
-      if (!vineflowerDir.equals(outputDir)) {
+      prepareOutputDirectory(corpseflowerDir);
+      if (!corpseflowerDir.equals(outputDir)) {
         prepareOutputDirectory(outputDir);
       }
 
-      decompileJar(deobfuscation.outputJar(), vineflowerDir, options.fernflowerOptions());
+      try {
+        outcome = decompileJar(inputJar, corpseflowerDir, options.fernflowerOptions());
+        deobfuscation = outcome.deobfuscation();
+      } catch (DecompileFailure e) {
+        outcome = e.outcome();
+        deobfuscation = outcome.deobfuscation();
+        decompileFailed = true;
+        System.err.println("[Corpseflower] WARN: Corpseflower decompilation failed for " + inputJar.getFileName() + ": " + e.getMessage());
+        if (options.verbose()) {
+          e.printStackTrace(System.err);
+        }
+      }
       if (printPerJarSummary) {
         printPhaseBSummary(inputJar, outputDir, deobfuscation);
       }
 
       if (options.qualityGate()) {
-        CfrBridge.Result cfrResult = new CfrBridge().decompile(deobfuscation.outputJar(), cfrDir, options.verbose());
-        mergeResult = new OutputMerger().merge(vineflowerDir, cfrDir, outputDir);
+        CfrBridge.Result cfrResult = new CfrBridge().decompile(outcome.classBytes(), cfrDir, options.verbose());
+        mergeResult = new OutputMerger().merge(corpseflowerDir, cfrDir, outputDir);
         if (printPerJarSummary) {
           printPhaseDSummary(cfrResult, mergeResult);
         }
-      } else if (!vineflowerDir.equals(outputDir)) {
-        new OutputMerger().merge(vineflowerDir, vineflowerDir, outputDir);
+      } else if (decompileFailed) {
+        throw new IllegalStateException("Corpseflower decompilation failed and the quality gate is disabled");
+      } else if (!corpseflowerDir.equals(outputDir)) {
+        new OutputMerger().merge(corpseflowerDir, corpseflowerDir, outputDir);
       }
 
       return new JarRunSummary(
@@ -105,20 +120,42 @@ final class CorpseflowerRunner {
         options.qualityGate() ? mergeResult.finalStubMarkers() : countStubMarkers(outputDir)
       );
     } finally {
-      deleteRecursively(vineflowerDir, !vineflowerDir.equals(outputDir));
+      if (!corpseflowerDir.equals(outputDir)) {
+        deleteRecursively(corpseflowerDir, true);
+      }
       deleteRecursively(cfrDir, cfrDir != null);
-      deobfuscation.cleanup();
     }
   }
 
-  private void decompileJar(Path jar, Path outputDir, Map<String, Object> fernflowerOptions) {
+  private DecompileOutcome decompileJar(Path jar, Path outputDir, Map<String, Object> fernflowerOptions) {
+    Map<String, Object> effectiveOptions = new java.util.HashMap<>(fernflowerOptions);
+    effectiveOptions.put(CorpseflowerPreferences.INPUT_PATH, jar.toString());
     PrintStreamLogger logger = new PrintStreamLogger(System.out);
-    Fernflower fernflower = new Fernflower(new DirectoryResultSaver(outputDir.toFile()), fernflowerOptions, logger);
+    Fernflower fernflower = new Fernflower(new DirectoryResultSaver(outputDir.toFile()), effectiveOptions, logger);
     try {
       fernflower.addSource(jar.toFile());
       fernflower.decompileContext();
+      return new DecompileOutcome(fernflower.getPreDecompileResult(), fernflower.getOwnClassBytesSnapshot());
+    } catch (RuntimeException e) {
+      throw new DecompileFailure(new DecompileOutcome(fernflower.getPreDecompileResult(), fernflower.getOwnClassBytesSnapshot()), e);
     } finally {
       fernflower.clearContext();
+    }
+  }
+
+  private record DecompileOutcome(Result deobfuscation, Map<String, byte[]> classBytes) {
+  }
+
+  private static final class DecompileFailure extends RuntimeException {
+    private final DecompileOutcome outcome;
+
+    private DecompileFailure(DecompileOutcome outcome, RuntimeException cause) {
+      super(cause.getMessage(), cause);
+      this.outcome = outcome;
+    }
+
+    private DecompileOutcome outcome() {
+      return outcome;
     }
   }
 
