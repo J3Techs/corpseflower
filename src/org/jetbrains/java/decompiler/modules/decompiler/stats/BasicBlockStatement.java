@@ -85,7 +85,7 @@ public final class BasicBlockStatement extends Statement {
     TextBuffer tb = ExprProcessor.listToJava(varDefinitions, indent);
     boolean islabeled = isLabeled();
     if (islabeled) {
-      tb.appendIndent(indent).append("label").append(id).append(':').append("// $VF: Invalid label!").appendLineSeparator();
+      tb.appendIndent(indent).append("label").append(id).append(':').append("// Corpseflower: Invalid label!").appendLineSeparator();
     }
 
     tb.append(ExprProcessor.listToJava(exprents, indent));

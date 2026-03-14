@@ -699,7 +699,7 @@ public final class ExceptionDeobfuscator {
 
           if (splitExceptionRange(range, setEntries, graph, engine)) {
             splitted = true;
-            graph.addComment("$VF: Handled exception range with multiple entry points by splitting it");
+            graph.addComment("CFNOTE: Handled exception range with multiple entry points by splitting it");
             break;
           }
         }
@@ -798,7 +798,7 @@ public final class ExceptionDeobfuscator {
         }
 
         if (!isMatchException(handler)) {
-          graph.addComment("$VF: Duplicated exception handlers to handle obfuscated exceptions");
+          graph.addComment("CFNOTE: Duplicated exception handlers to handle obfuscated exceptions");
         }
 
       } else {

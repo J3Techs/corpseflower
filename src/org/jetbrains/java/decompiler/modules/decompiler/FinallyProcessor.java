@@ -101,7 +101,7 @@ public class FinallyProcessor {
               this.finallyBlocks.put(handler, varIndex);
 
               if (DecompilerContext.getOption(IFernflowerPreferences.DECOMPILER_COMMENTS)) {
-                root.addComment("$VF: Could not verify finally blocks. A semaphore variable has been added to preserve control flow.", true);
+                root.addComment("CFNOTE: Could not verify finally blocks. A semaphore variable has been added to preserve control flow.", true);
               }
             }
 

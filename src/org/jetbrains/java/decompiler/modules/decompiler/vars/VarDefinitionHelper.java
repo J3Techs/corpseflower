@@ -571,7 +571,7 @@ public class VarDefinitionHelper {
           } else {
             RootStatement root = stat.getTopParent();
 
-            root.addComment("$VF: One or more variable merging failures!", true);
+            root.addComment("CFNOTE: One or more variable merging failures!", true);
           }
         }
       }

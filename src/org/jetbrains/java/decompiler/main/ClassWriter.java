@@ -1651,7 +1651,12 @@ public class ClassWriter implements StatementWriter {
   }
 
   private static void appendComment(TextBuffer buffer, String comment, int indent) {
-    buffer.appendIndent(indent).append("// $VF: ").append(comment).appendLineSeparator();
+    buffer.appendIndent(indent);
+    if (comment.startsWith("CFNOTE:")) {
+      buffer.append("// Corpseflower: ").append(comment.substring("CFNOTE:".length()).trim()).appendLineSeparator();
+      return;
+    }
+    buffer.append("// $VF: ").append(comment).appendLineSeparator();
   }
 
   private static void appendJavadoc(TextBuffer buffer, String javaDoc, int indent) {

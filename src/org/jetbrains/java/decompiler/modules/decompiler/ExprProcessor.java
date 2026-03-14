@@ -709,7 +709,7 @@ public class ExprProcessor implements CodeConstants {
 
     if (stat instanceof BasicBlockStatement) {
       if (stat.isLabeled()) {
-        root.addComment("$VF: Made invalid labels!", true);
+        root.addComment("CFNOTE: Made invalid labels!", true);
       }
 
       for (Exprent ex : stat.getExprents()) {
@@ -720,7 +720,7 @@ public class ExprProcessor implements CodeConstants {
 
   private static void markExprOddity(RootStatement root, Exprent ex) {
     if (ex instanceof MonitorExprent) {
-      root.addComment("$VF: Could not create synchronized statement, marking monitor enters and exits", true);
+      root.addComment("CFNOTE: Could not create synchronized statement, marking monitor enters and exits", true);
     }
     if (ex instanceof IfExprent) {
       root.addComment("$VF: Accidentally destroyed if statement, the decompiled code is not correct!", true);
@@ -730,14 +730,14 @@ public class ExprProcessor implements CodeConstants {
       if (e instanceof VarExprent) {
         VarExprent var = (VarExprent)e;
         if (var.isDefinition() && isInvalidTypeName(var.getDefinitionType()) || var.getExprType() == VarType.VARTYPE_UNKNOWN) {
-          root.addComment("$VF: Could not properly define all variable types!", true);
+          root.addComment("CFNOTE: Could not properly define all variable types!", true);
         }
       } else if (e instanceof FunctionExprent) {
         FunctionExprent func = (FunctionExprent)e;
         if (func.getFuncType() == FunctionType.CAST && func.doesCast()) {
           List<Exprent> operands = func.getLstOperands();
           if (isInvalidTypeName(operands.get(1).toString())) {
-            root.addComment("$VF: Could not properly define all variable types!", true);
+            root.addComment("CFNOTE: Could not properly define all variable types!", true);
           }
         }
       }
@@ -896,7 +896,7 @@ public class ExprProcessor implements CodeConstants {
         }
         buf.append(content);
         if (expr instanceof MonitorExprent && ((MonitorExprent)expr).getMonType() == MonitorExprent.Type.ENTER) {
-          buf.append("{} // $VF: monitorenter "); // empty synchronized block
+          buf.append("{} // Corpseflower: monitorenter "); // empty synchronized block
         }
         if (endsWithSemicolon(expr)) {
           buf.append(";");

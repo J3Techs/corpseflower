@@ -888,11 +888,7 @@ public class InvocationExprent extends Exprent {
           buf.append("this(");
         }
         else if (instance != null) {
-          String s = ".";
-          if (DecompilerContext.getOption(IFernflowerPreferences.DECOMPILER_COMMENTS)) {
-            s += "/* $VF: Unable to resugar constructor */";
-          }
-          s += "<init>(";
+          String s = ".<init>(";
 
           buf.append(instance.toJava(indent)).append(s);
         }

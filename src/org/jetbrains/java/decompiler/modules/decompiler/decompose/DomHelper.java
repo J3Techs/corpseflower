@@ -21,7 +21,7 @@ import org.jetbrains.java.decompiler.util.collections.VBStyleCollection;
 import java.util.*;
 
 public final class DomHelper implements GraphParser {
-  private static final int MAX_IRREDUCIBLE_SPLITS = 12;
+  private static final int MAX_IRREDUCIBLE_SPLITS = 32;
 
   @Override
   public RootStatement createStatement(ControlFlowGraph graph, StructMethod mt) {
@@ -426,7 +426,7 @@ public final class DomHelper implements GraphParser {
                 root.addComment("$VF: Irreducible bytecode exceeded the Corpseflower split budget and was not entirely decomposed", true);
               }
 
-              root.addComment("$VF: Irreducible bytecode was duplicated to produce valid code");
+              root.addComment("CFNOTE: Irreducible bytecode was duplicated to produce valid code");
             }
           } else {
             tracer.error(general, "Flow not irreducible, but could not decompose");

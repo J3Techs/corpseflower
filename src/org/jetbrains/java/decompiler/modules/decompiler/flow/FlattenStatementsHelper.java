@@ -1,6 +1,8 @@
 // Copyright 2000-2020 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license that can be found in the LICENSE file.
 package org.jetbrains.java.decompiler.modules.decompiler.flow;
 
+import org.jetbrains.java.decompiler.main.DecompilerContext;
+import org.jetbrains.java.decompiler.main.extern.IFernflowerLogger;
 import org.jetbrains.java.decompiler.modules.decompiler.StatEdge;
 import org.jetbrains.java.decompiler.modules.decompiler.ValidationHelper;
 import org.jetbrains.java.decompiler.modules.decompiler.exps.Exprent;
@@ -558,6 +560,15 @@ public class FlattenStatementsHelper {
       DirectNode dest = this.getDestination(edge);
 
       if (dest == null) {
+        if (edge.type == Edge.Type.EXCEPTION || edge.type == Edge.Type.CONTINUE) {
+          DecompilerContext.getLogger().writeMessage(
+            "Skipping unresolved " + edge.type.name().toLowerCase(Locale.ROOT) + " edge from " + source + " to " + edge.stat +
+              " in " + this.root.mt.getClassQualifiedName() + " " + this.root.mt.getName() + this.root.mt.getDescriptor(),
+            IFernflowerLogger.Severity.WARN
+          );
+          continue;
+        }
+
         DotExporter.toDotFile(this.graph, this.root.mt, "errorDGraph");
 
         throw new IllegalStateException("Could not find destination nodes for stat id " + edge.stat + " from source " + source);
@@ -592,8 +603,42 @@ public class FlattenStatementsHelper {
 
 
   private DirectNode getDestination(Edge edge) {
-    return (edge.type == Edge.Type.CONTINUE ? this.mapContinueDestinationNodes : this.mapRegularDestinationNodes)
-      .get(edge.stat);
+    Map<Statement, DirectNode> destinations =
+      edge.type == Edge.Type.CONTINUE ? this.mapContinueDestinationNodes : this.mapRegularDestinationNodes;
+
+    DirectNode direct = destinations.get(edge.stat);
+    if (direct != null) {
+      return direct;
+    }
+
+    Statement cursor = edge.stat == null ? null : edge.stat.getParent();
+    while (cursor != null) {
+      direct = destinations.get(cursor);
+      if (direct != null) {
+        DecompilerContext.getLogger().writeMessage(
+          "Recovered flattened " + edge.type.name().toLowerCase(Locale.ROOT) + " edge target " + edge.stat + " via parent " + cursor +
+            " in " + this.root.mt.getClassQualifiedName() + " " + this.root.mt.getName() + this.root.mt.getDescriptor(),
+          IFernflowerLogger.Severity.WARN
+        );
+        return direct;
+      }
+
+      if (edge.type == Edge.Type.CONTINUE) {
+        direct = this.mapRegularDestinationNodes.get(cursor);
+        if (direct != null) {
+          DecompilerContext.getLogger().writeMessage(
+            "Recovered flattened continue edge target " + edge.stat + " via regular parent " + cursor +
+              " in " + this.root.mt.getClassQualifiedName() + " " + this.root.mt.getName() + this.root.mt.getDescriptor(),
+            IFernflowerLogger.Severity.WARN
+          );
+          return direct;
+        }
+      }
+
+      cursor = cursor.getParent();
+    }
+
+    return null;
   }
 
 

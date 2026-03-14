@@ -53,7 +53,7 @@ public class MonitorExprent extends Exprent {
       return buf.append(value.toJava(indent)).enclose("synchronized (", ")");
     }
     else {
-      return buf.append("// $VF: monitorexit");
+      return buf.append("// Corpseflower: monitorexit");
     }
   }
 
