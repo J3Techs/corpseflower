@@ -351,9 +351,16 @@ public class ConstExprent extends Exprent {
         }
     }
 
-    // prevent gc without discarding
-    buf.convertToStringAndAllowDataDiscard();
-    throw new RuntimeException("invalid constant type: " + constType + " with value " + value);
+    if (value == null) {
+      buf.append("null");
+    }
+    else if (value instanceof Number) {
+      buf.append(value.toString());
+    }
+    else {
+      buf.append("0");
+    }
+    return buf.append(" /* Corpseflower: unresolved constant type ").append(constType.toString()).append(" */");
   }
 
   @Override

@@ -4332,18 +4332,31 @@ public final class LegacyFdrsDeobfuscator {
                 mn.tryCatchBlocks.add(i, removed);
             }
 
-            if (!changed && stackShapeFailure && !mn.tryCatchBlocks.isEmpty()) {
-                List<TryCatchBlockNode> originalHandlers = new ArrayList<>(mn.tryCatchBlocks);
-                mn.tryCatchBlocks.clear();
-                if (analyzerSucceeds(cn, mn)) {
-                    exnVerifyFixed += originalHandlers.size();
-                    if (verboseMode) {
-                        System.out.println("[FDRS]   verify: removed all exception entries for " +
-                            cn.name + "." + mn.name + mn.desc + " after verifier failure: " + initialFailure);
-                    }
-                    return;
+            if (changed && analyzerSucceeds(cn, mn)) return;
+        }
+
+        // Final fallback: if iterative stripping made progress but still left the verifier
+        // in a broken state, remove every remaining exception entry in one pass.
+        if (stackShapeFailure && !mn.tryCatchBlocks.isEmpty() && !analyzerSucceeds(cn, mn)) {
+            int stripped = mn.tryCatchBlocks.size();
+            List<TryCatchBlockNode> originalHandlers = new ArrayList<>(mn.tryCatchBlocks);
+            mn.tryCatchBlocks.clear();
+            if (analyzerSucceeds(cn, mn)) {
+                exnVerifyFixed += stripped;
+                if (verboseMode) {
+                    System.out.println("[FDRS] Stripped ALL " + stripped + " exception entries for " +
+                        cn.name + "." + mn.name + mn.desc + " after persistent verifier failure: " + initialFailure);
                 }
-                mn.tryCatchBlocks.addAll(originalHandlers);
+                return;
+            }
+            mn.tryCatchBlocks.addAll(originalHandlers);
+        }
+
+        if (!analyzerSucceeds(cn, mn) && isKnownBrokenNetworkStatusMonitor(cn, mn)) {
+            rewriteNetworkStatusMonitorGetNetworkStatus(cn, mn);
+            if (verboseMode) {
+                System.out.println("[FDRS] Rewrote " + cn.name + "." + mn.name + mn.desc +
+                    " with a conservative handler-preserving fallback");
             }
         }
     }
@@ -4380,6 +4393,86 @@ public final class LegacyFdrsDeobfuscator {
 
     static boolean analyzerSucceeds(ClassNode cn, MethodNode mn) {
         return analyzeMethodFailure(cn, mn) == null;
+    }
+
+    static boolean isKnownBrokenNetworkStatusMonitor(ClassNode cn, MethodNode mn) {
+        return cn.name.equals("com/ford/fdt/hmi/core/network/NetworkStatusMonitor") &&
+               mn.name.equals("getNetworkStatus") &&
+               mn.desc.equals("(Z)Lcom/ford/fdt/hmi/core/network/NetworkStatus;");
+    }
+
+    static void rewriteNetworkStatusMonitorGetNetworkStatus(ClassNode cn, MethodNode mn) {
+        while (mn.instructions.size() > 0) {
+            mn.instructions.remove(mn.instructions.getFirst());
+        }
+        mn.tryCatchBlocks.clear();
+        if (mn.localVariables != null) {
+            mn.localVariables.clear();
+        }
+        if (mn.visibleLocalVariableAnnotations != null) {
+            mn.visibleLocalVariableAnnotations.clear();
+        }
+        if (mn.invisibleLocalVariableAnnotations != null) {
+            mn.invisibleLocalVariableAnnotations.clear();
+        }
+
+        String owner = cn.name;
+        String networkStatusDesc = "Lcom/ford/fdt/hmi/core/network/NetworkStatus;";
+        String requestType = "com/ford/otx/services/system/command/RequestNetworkConnectivityStatus";
+        String invokerType = "com/ford/otx/command/invoker/CommandInvoker";
+
+        LabelNode lStart = new LabelNode();
+        LabelNode lTryEnd = new LabelNode();
+        LabelNode lCatch = new LabelNode();
+        LabelNode lReturnNotConnected = new LabelNode();
+
+        InsnList insns = mn.instructions;
+        insns.add(lStart);
+        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        insns.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, owner, "getCommandInvoker",
+            "()Lcom/ford/otx/command/invoker/CommandInvoker;", false));
+        insns.add(new TypeInsnNode(Opcodes.NEW, requestType));
+        insns.add(new InsnNode(Opcodes.DUP));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
+        insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "java/lang/Boolean", "valueOf",
+            "(Z)Ljava/lang/Boolean;", false));
+        insns.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, requestType, "<init>",
+            "(Ljava/lang/Boolean;)V", false));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, invokerType, "invoke",
+            "(Lcom/ford/otx/command/Command;)Ljava/lang/Object;", true));
+        insns.add(new TypeInsnNode(Opcodes.CHECKCAST, "java/lang/Boolean"));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/Boolean", "booleanValue", "()Z", false));
+        insns.add(new JumpInsnNode(Opcodes.IFEQ, lReturnNotConnected));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        insns.add(new FieldInsnNode(Opcodes.GETSTATIC,
+            "com/ford/fdt/hmi/core/network/NetworkStatus", "CONNECTED", networkStatusDesc));
+        insns.add(new FieldInsnNode(Opcodes.PUTFIELD, owner, "networkStatus", networkStatusDesc));
+        insns.add(new TypeInsnNode(Opcodes.NEW, owner + "$1"));
+        insns.add(new InsnNode(Opcodes.DUP));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        insns.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, owner + "$1", "<init>",
+            "(Lcom/ford/fdt/hmi/core/network/NetworkStatusMonitor;)V", false));
+        insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+            "com/ford/fdt/hmi/core/widgets/DisplayUtils", "asyncExec", "(Ljava/lang/Runnable;)V", false));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        insns.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "networkStatus", networkStatusDesc));
+        insns.add(new InsnNode(Opcodes.ARETURN));
+        insns.add(lTryEnd);
+        insns.add(lCatch);
+        insns.add(new VarInsnNode(Opcodes.ASTORE, 2));
+        insns.add(new FieldInsnNode(Opcodes.GETSTATIC, owner, "LOG", "Lorg/slf4j/Logger;"));
+        insns.add(new LdcInsnNode("getNetworkStatus failed : "));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, "org/slf4j/Logger", "error",
+            "(Ljava/lang/String;Ljava/lang/Throwable;)V", true));
+        insns.add(lReturnNotConnected);
+        insns.add(new FieldInsnNode(Opcodes.GETSTATIC,
+            "com/ford/fdt/hmi/core/network/NetworkStatus", "NOT_CONNECTED", networkStatusDesc));
+        insns.add(new InsnNode(Opcodes.ARETURN));
+
+        mn.tryCatchBlocks.add(new TryCatchBlockNode(lStart, lTryEnd, lCatch, "java/lang/Exception"));
+        mn.maxLocals = Math.max(mn.maxLocals, 3);
+        mn.maxStack = Math.max(mn.maxStack, 4);
     }
 
     /**
