@@ -684,6 +684,10 @@ public class ExprProcessor implements CodeConstants {
     }
 
     if (stat instanceof BasicBlockStatement) {
+      if (stat.getExprents() == null) {
+        return res;
+      }
+
       for (Exprent exprent : stat.getExprents()) {
         for (Exprent ex : exprent.getAllExprents(true, true)) {
 
@@ -733,6 +737,10 @@ public class ExprProcessor implements CodeConstants {
     if (stat instanceof BasicBlockStatement) {
       if (stat.isLabeled()) {
         root.addComment("CFNOTE: Made invalid labels!", true);
+      }
+
+      if (stat.getExprents() == null) {
+        return;
       }
 
       for (Exprent ex : stat.getExprents()) {

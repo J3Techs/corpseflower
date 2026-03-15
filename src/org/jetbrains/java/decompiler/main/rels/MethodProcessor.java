@@ -1,6 +1,7 @@
 // Copyright 2000_2021 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license that can be found in the LICENSE file.
 package org.jetbrains.java.decompiler.main.rels;
 
+import org.corpseflower.irreducible.ArrowSetStatementBuilder;
 import org.corpseflower.irreducible.IrreducibleDispatcherInserter;
 import org.jetbrains.java.decompiler.api.java.JavaPassLocation;
 import org.jetbrains.java.decompiler.api.plugin.LanguageSpec;
@@ -506,11 +507,19 @@ public class MethodProcessor implements Runnable {
         }
 
         if (round == MAX_DISPATCHER_RETRY_ROUNDS) {
+          RootStatement arrowSetRoot = tryArrowSetFallback(graph, mt, firstFailure);
+          if (arrowSetRoot != null) {
+            return arrowSetRoot;
+          }
           throw firstFailure;
         }
 
         int dispatchers = IrreducibleDispatcherInserter.insertDispatchers(graph, mt);
         if (dispatchers <= 0) {
+          RootStatement arrowSetRoot = tryArrowSetFallback(graph, mt, firstFailure);
+          if (arrowSetRoot != null) {
+            return arrowSetRoot;
+          }
           throw firstFailure;
         }
 
@@ -527,6 +536,22 @@ public class MethodProcessor implements Runnable {
     }
 
     throw firstFailure;
+  }
+
+  private static RootStatement tryArrowSetFallback(ControlFlowGraph graph, StructMethod mt, RuntimeException firstFailure) {
+    try {
+      RootStatement arrowSetRoot = ArrowSetStatementBuilder.buildFromCFG(graph, mt);
+      if (arrowSetRoot != null) {
+        DecompilerContext.getLogger().writeMessage(
+          "Arrow-set fallback succeeded for " + mt.getName() + mt.getDescriptor(),
+          IFernflowerLogger.Severity.WARN
+        );
+      }
+      return arrowSetRoot;
+    } catch (Exception arrowEx) {
+      firstFailure.addSuppressed(arrowEx);
+      return null;
+    }
   }
 
   private static boolean isParseGraphFailure(RuntimeException ex) {
