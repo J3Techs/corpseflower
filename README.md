@@ -1,25 +1,15 @@
 <div align="center">
 
-```
- ▄▄·        ▄▄▄   ▄▄▄·.▄▄ · ▄▄▄ .·▄▄▄▄▄▄▄▌  ▄▄▌ ▐ ▄▌▄▄▄ .▄▄▄
-▐█ ▌▪▪     ▀▄ █·▐█ ▄█▐█ ▀. ▀▄.▀·▐▄▄·•██  █  ██· █▌▐█▀▄.▀·▀▄ █·
-██ ▄▄ ▄█▀▄ ▐▀▀▄ ██▀·▄▀▀▀█▄▐▀▀▪▄██▪  ▐█.▪██▄▄██▪▐█▐▐▌▐▀▀▪▄▐▀▀▄
-▐███▌▐█▌.▐▌▐█•█▌▐█▪·•▐█▄▪▐█▐█▄▄▌██▌. ▐█▌·▐▄▄·▐█▌██▐█▌▐█▄▄▌▐█•█▌
-·▀▀▀  ▀█▄▀▪.▀  ▀.▀    ▀▀▀▀  ▀▀▀ ▀▀▀  ▀▀▀ .▀    ▀▀▀▀ ▀▪ ▀▀▀ .▀  ▀
-```
+<img src="assets/corpseflower-banner.jpg" alt="Corpseflower — The Decompiler That Refuses to Give Up" width="700">
 
-<br>
-
-**The decompiler that refuses to give up.**
-
-<br>
+<br><br>
 
 [![Java 17+](https://img.shields.io/badge/Java-17%2B-ED8B00?style=for-the-badge&logo=openjdk&logoColor=white)](https://openjdk.org/)
 [![Vineflower Fork](https://img.shields.io/badge/Fork_of-Vineflower_1.11.2-6DB33F?style=for-the-badge)](https://vineflower.org/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue?style=for-the-badge)](LICENSE.md)
 [![CFR Embedded](https://img.shields.io/badge/CFR-0.152_Embedded-critical?style=for-the-badge)](https://github.com/leibnitz27/cfr)
 
----
+<br>
 
 *A weaponized [Vineflower](https://github.com/Vineflower/vineflower) fork for reverse engineering obfuscated Java.*
 *Integrates bytecode deobfuscation, multi-strategy control flow recovery,*
