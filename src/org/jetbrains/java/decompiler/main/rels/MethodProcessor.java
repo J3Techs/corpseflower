@@ -30,6 +30,7 @@ import org.jetbrains.java.decompiler.struct.gen.MethodDescriptor;
 import org.jetbrains.java.decompiler.util.DotExporter;
 
 import java.io.IOException;
+import java.util.LinkedHashSet;
 
 public class MethodProcessor implements Runnable {
   private static final int MAX_DISPATCHER_RETRY_ROUNDS = 3;
@@ -542,6 +543,8 @@ public class MethodProcessor implements Runnable {
     try {
       RootStatement arrowSetRoot = ArrowSetStatementBuilder.buildFromCFG(graph, mt);
       if (arrowSetRoot != null) {
+        LabelHelper.lowContinueLabels(arrowSetRoot, new LinkedHashSet<>());
+        SequenceHelper.condenseSequences(arrowSetRoot);
         DecompilerContext.getLogger().writeMessage(
           "Arrow-set fallback succeeded for " + mt.getName() + mt.getDescriptor(),
           IFernflowerLogger.Severity.WARN
@@ -558,7 +561,8 @@ public class MethodProcessor implements Runnable {
     String message = ex.getMessage();
     return message != null &&
            (message.contains("parsing failure") ||
-            message.contains("computing post reverse post order failed"));
+            message.contains("computing post reverse post order failed") ||
+            message.contains("Inconsistent statement structure"));
   }
 
   public RootStatement getResult() throws Throwable {

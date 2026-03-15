@@ -5,7 +5,6 @@ import org.corpseflower.deobfuscation.NamedPreDecompilePass;
 import org.corpseflower.deobfuscation.PreDecompileContext;
 import org.corpseflower.passes.ConstantExpressionFolder;
 import org.corpseflower.passes.DeadCodeEliminator;
-import org.corpseflower.passes.StateMachineDeflattener;
 import org.jetbrains.java.decompiler.api.plugin.Plugin;
 import org.jetbrains.java.decompiler.api.java.JavaPassLocation;
 import org.jetbrains.java.decompiler.api.java.JavaPassRegistrar;
@@ -64,7 +63,7 @@ public class PluginContext {
     registrar.register(JavaPassLocation.PRE_DECOMPILE, NamedPreDecompilePass.of("CorpseflowerDeobfuscate", new CorpseflowerPreDecompilePass()));
     registrar.register(JavaPassLocation.MAIN_LOOP, NamedPass.of("CorpseflowerConstFold", new ConstantExpressionFolder()));
     registrar.register(JavaPassLocation.MAIN_LOOP, NamedPass.of("CorpseflowerDeadCode", new DeadCodeEliminator()));
-    registrar.register(JavaPassLocation.AFTER_MAIN, NamedPass.of("CorpseflowerDeflatten", new StateMachineDeflattener()));
+    // TODO: Re-enable when StateMachineDeflattener performs a real transformation.
 
     for (Plugin plugin : plugins) {
       String id = plugin.id();

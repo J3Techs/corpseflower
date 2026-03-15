@@ -8,6 +8,7 @@ import org.jetbrains.java.decompiler.util.collections.VBStyleCollection;
 import java.util.*;
 
 public class DominatorEngine {
+  private static final int EXTRA_CONVERGENCE_PASSES = 10;
 
   private final Statement statement;
 
@@ -61,8 +62,13 @@ public class DominatorEngine {
 
     int index1 = orderedIDoms.getIndexByKey(key1);
     int index2 = orderedIDoms.getIndexByKey(key2);
+    int remainingSteps = orderedIDoms.size() * 2 + 1;
 
     while (index1 != index2) {
+      if (remainingSteps-- <= 0) {
+        throw new IllegalStateException("Inconsistent statement structure! Dominator chain did not converge.");
+      }
+
       if (index1 > index2) {
         oldKey = key1;
         key1 = orderedIDoms.getWithKey(key1);
@@ -96,7 +102,9 @@ public class DominatorEngine {
     // exclude first statement
     List<Integer> lstIds = colOrderedIDoms.getLstKeys().subList(1, colOrderedIDoms.getLstKeys().size());
 
-    while (true) {
+    int maxIterations = colOrderedIDoms.size() * 2 + EXTRA_CONVERGENCE_PASSES;
+
+    for (int iter = 0; iter < maxIterations; iter++) {
 
       boolean changed = false;
 
@@ -132,9 +140,11 @@ public class DominatorEngine {
       }
 
       if (!changed) {
-        break;
+        return;
       }
     }
+
+    throw new IllegalStateException("Inconsistent statement structure! Dominator computation did not converge.");
   }
 
   public VBStyleCollection<Integer, Integer> getOrderedIDoms() {

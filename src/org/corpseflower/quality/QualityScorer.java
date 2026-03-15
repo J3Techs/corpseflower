@@ -1,6 +1,10 @@
 package org.corpseflower.quality;
 
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 public final class QualityScorer {
+  private static final Pattern RAW_LABEL_PATTERN = Pattern.compile("\\blbl\\d+:");
   private static final String[] FAILURE_MARKERS = {
     "// $VF: Couldn't be decompiled",
     "$VF: Unable to decompile class",
@@ -75,7 +79,16 @@ public final class QualityScorer {
   }
 
   private int rawDumpCount(String source) {
-    return count(source, "lbl") + count(source, "bytecode offset") + count(source, "goto ");
+    return countPattern(source, RAW_LABEL_PATTERN) + count(source, "bytecode offset") + count(source, "goto ");
+  }
+
+  private int countPattern(String source, Pattern pattern) {
+    int count = 0;
+    Matcher matcher = pattern.matcher(source);
+    while (matcher.find()) {
+      count++;
+    }
+    return count;
   }
 
   public record Score(int completeness, int artifacts, int readabilityPenalty, int stubCount, int total) {

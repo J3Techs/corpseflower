@@ -64,6 +64,7 @@ public final class OutputMerger {
     Score cfrScore = scorer.score(cfrSource);
     boolean corpseflowerClean = isClean(corpseflowerScore);
     boolean cfrClean = isClean(cfrScore);
+    boolean corpseflowerHasFailures = scorer.hasFailureMarkers(corpseflowerSource);
 
     if (corpseflowerClean) {
       if (!cfrClean) {
@@ -75,6 +76,10 @@ public final class OutputMerger {
       if (corpseflowerScore.total() >= cfrScore.total()) {
         return new MergeDecision(corpseflowerSource, false);
       }
+    }
+
+    if (corpseflowerHasFailures && cfrClean) {
+      return new MergeDecision(withHeader(cfrSource), true);
     }
 
     String spliced = spliceMembers(corpseflowerSource, cfrSource);

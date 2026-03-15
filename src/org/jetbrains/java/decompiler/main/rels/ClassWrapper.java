@@ -168,6 +168,9 @@ public class ClassWrapper {
 
       MethodWrapper methodWrapper = new MethodWrapper(root, varProc, mt, classStruct, counter);
       methodWrapper.decompileError = error;
+      if (error != null) {
+        methodWrapper.failureGraph = MethodProcessor.debugCurrentCFG.get();
+      }
 
       methods.addWithKey(methodWrapper, InterpreterUtil.makeUniqueKey(mt.getName(), mt.getDescriptor()));
 

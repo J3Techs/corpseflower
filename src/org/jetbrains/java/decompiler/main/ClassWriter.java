@@ -7,6 +7,8 @@ import org.jetbrains.java.decompiler.api.plugin.StatementWriter;
 import org.jetbrains.java.decompiler.code.CodeConstants;
 import org.jetbrains.java.decompiler.code.Instruction;
 import org.jetbrains.java.decompiler.code.InstructionSequence;
+import org.jetbrains.java.decompiler.code.cfg.BasicBlock;
+import org.jetbrains.java.decompiler.code.cfg.ControlFlowGraph;
 import org.jetbrains.java.decompiler.main.ClassesProcessor.ClassNode;
 import org.jetbrains.java.decompiler.main.collectors.ImportCollector;
 import org.jetbrains.java.decompiler.main.decompiler.CancelationManager;
@@ -1340,7 +1342,9 @@ public class ClassWriter implements StatementWriter {
         }
 
         if (methodWrapper.decompileError != null) {
-          dumpError(buffer, methodWrapper, indent + 1);
+          if (!dumpLinearizedFallback(buffer, methodWrapper, indent + 1)) {
+            dumpError(buffer, methodWrapper, indent + 1);
+          }
         }
         buffer.appendIndent(indent).append('}').appendLineSeparator();
       }
@@ -1354,6 +1358,58 @@ public class ClassWriter implements StatementWriter {
     //tracer.setCurrentSourceLine(buffer.countLines(start_index_method));
 
     return !hideMethod;
+  }
+
+  private static boolean dumpLinearizedFallback(TextBuffer buffer, MethodWrapper wrapper, int indent) {
+    ControlFlowGraph graph = wrapper.failureGraph;
+    if (graph == null || graph.getBlocks().isEmpty()) {
+      return false;
+    }
+
+    appendCorpseflowerComment(buffer, indent, "linearized CFG fallback; structured decompilation failed");
+    if (wrapper.decompileError != null) {
+      appendCorpseflowerComment(buffer, indent, "original error: " + wrapper.decompileError);
+    }
+
+    StructClass cl = wrapper.classStruct;
+    for (BasicBlock block : graph.getBlocks()) {
+      StringBuilder header = new StringBuilder("block_").append(block.id);
+      if (block == graph.getFirst()) {
+        header.append(" (entry)");
+      }
+      if (block == graph.getLast()) {
+        header.append(" (exit)");
+      }
+      appendCorpseflowerComment(buffer, indent, header.append(':').toString());
+
+      List<String> instructionLines = new ArrayList<>();
+      try {
+        collectBlockBytecode(cl, block, instructionLines);
+      } catch (Exception ex) {
+        instructionLines.clear();
+        instructionLines.add("error collecting block instructions: " + ex);
+      }
+
+      for (String line : instructionLines) {
+        appendCorpseflowerComment(buffer, indent + 1, line);
+      }
+
+      List<String> targets = new ArrayList<>();
+      for (BasicBlock succ : block.getSuccs()) {
+        targets.add(describeBlockTarget(graph, succ));
+      }
+      for (BasicBlock succEx : block.getSuccExceptions()) {
+        targets.add("exception -> " + describeBlockTarget(graph, succEx));
+      }
+      if (!targets.isEmpty()) {
+        appendCorpseflowerComment(buffer, indent + 1, "targets: " + String.join(", ", targets));
+      }
+    }
+
+    buffer.appendIndent(indent)
+      .append("throw new IllegalStateException(\"Corpseflower linearized fallback\");")
+      .appendLineSeparator();
+    return true;
   }
 
   private static void dumpError(TextBuffer buffer, MethodWrapper wrapper, int indent) {
@@ -1385,6 +1441,110 @@ public class ClassWriter implements StatementWriter {
       if (!line.isEmpty()) buffer.append(' ').append(line);
       buffer.appendLineSeparator();
     }
+  }
+
+  private static void collectBlockBytecode(StructClass cl, BasicBlock block, List<String> lines) {
+    InstructionSequence instructions = block.getSeq();
+    if (instructions == null || instructions.length() == 0) {
+      lines.add("<empty block>");
+      return;
+    }
+
+    ConstantPool pool = cl.getPool();
+    StructBootstrapMethodsAttribute bootstrap = cl.getAttribute(StructGeneralAttribute.ATTRIBUTE_BOOTSTRAP_METHODS);
+    int lastOffset = Math.max(0, block.getOldOffset(instructions.length() - 1));
+    int digits = Math.max(1, 8 - Integer.numberOfLeadingZeros(lastOffset) / 4);
+
+    for (int idx = 0; idx < instructions.length(); idx++) {
+      int offset = Math.max(0, block.getOldOffset(idx));
+      Instruction instr = instructions.getInstr(idx);
+      lines.add(formatInstructionLine(instructions, idx, offset, digits, instr, pool, bootstrap));
+    }
+  }
+
+  private static String formatInstructionLine(InstructionSequence instructions,
+                                              int index,
+                                              int offset,
+                                              int digits,
+                                              Instruction instr,
+                                              ConstantPool pool,
+                                              StructBootstrapMethodsAttribute bootstrap) {
+    StringBuilder sb = new StringBuilder();
+    String offHex = Integer.toHexString(offset);
+    for (int i = offHex.length(); i < digits; i++) {
+      sb.append('0');
+    }
+    sb.append(offHex).append(": ");
+    if (instr.wide) {
+      sb.append("wide ");
+    }
+    sb.append(TextUtil.getInstructionName(instr.opcode));
+
+    switch (instr.group) {
+      case CodeConstants.GROUP_INVOCATION:
+        sb.append(' ');
+        if (instr.opcode == CodeConstants.opc_invokedynamic && bootstrap != null) {
+          appendBootstrapCall(sb, pool.getLinkConstant(instr.operand(0)), bootstrap);
+        } else {
+          appendConstant(sb, pool.getConstant(instr.operand(0)));
+        }
+        for (int i = 1; i < instr.operandsCount(); i++) {
+          sb.append(' ').append(instr.operand(i));
+        }
+        break;
+      case CodeConstants.GROUP_FIELDACCESS:
+        sb.append(' ');
+        appendConstant(sb, pool.getConstant(instr.operand(0)));
+        break;
+      case CodeConstants.GROUP_JUMP:
+        sb.append(' ');
+        int dest = offset + instr.operand(0);
+        String destHex = Integer.toHexString(dest);
+        for (int i = destHex.length(); i < digits; i++) {
+          sb.append('0');
+        }
+        sb.append(destHex);
+        break;
+      default:
+        switch (instr.opcode) {
+          case CodeConstants.opc_new:
+          case CodeConstants.opc_checkcast:
+          case CodeConstants.opc_instanceof:
+          case CodeConstants.opc_ldc:
+          case CodeConstants.opc_ldc_w:
+          case CodeConstants.opc_ldc2_w:
+            sb.append(' ');
+            PooledConstant constant = pool.getConstant(instr.operand(0));
+            if (constant.type == CodeConstants.CONSTANT_Dynamic && bootstrap != null) {
+              appendBootstrapCall(sb, (LinkConstant) constant, bootstrap);
+            } else {
+              appendConstant(sb, constant);
+            }
+            break;
+          default:
+            for (int i = 0; i < instr.operandsCount(); i++) {
+              sb.append(' ').append(instr.operand(i));
+            }
+            break;
+        }
+        break;
+    }
+
+    return sb.toString();
+  }
+
+  private static String describeBlockTarget(ControlFlowGraph graph, BasicBlock block) {
+    if (block == null) {
+      return "<null>";
+    }
+    if (block == graph.getLast()) {
+      return "exit";
+    }
+    return "block_" + block.id;
+  }
+
+  private static void appendCorpseflowerComment(TextBuffer buffer, int indent, String text) {
+    buffer.appendIndent(indent).append("// Corpseflower: ").append(text).appendLineSeparator();
   }
 
   public static void collectErrorLines(Throwable error, List<String> lines) {

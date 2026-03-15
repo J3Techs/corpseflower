@@ -48,30 +48,35 @@ public final class ArrowSetStatementBuilder {
       return null;
     }
 
-    wireGraphEdges(graph, mt, stats, dummyExit);
-
-    Statement body;
     if (stats.size() == 1 && !graph.getFirst().isSuccessor(graph.getFirst())) {
-      body = first;
-    } else {
-      ArrowSet arrowSet = ArrowSet.fromCFG(graph);
-      GeneralStatement general = new GeneralStatement(first, stats, null);
-      general.setAllParent();
-      general.buildContinueSet();
-      general.buildMonitorFlags();
-
-      collapseSimpleStatements(general, arrowSet, mt);
-      body = general.getStats().size() == 1 ? general.getFirst() : buildFallbackSequence(general, arrowSet);
+      RootStatement root = new RootStatement(first, dummyExit, mt);
+      first.addSuccessor(new StatEdge(StatEdge.TYPE_BREAK, first, dummyExit, root));
+      root.addComments(graph);
+      return root;
     }
+
+    ArrowSet arrowSet = ArrowSet.fromCFG(graph);
+    GeneralStatement general = new GeneralStatement(first, stats, null);
+    RootStatement root = new RootStatement(general, dummyExit, mt);
+
+    wireGraphEdges(graph, mt, stats, dummyExit, general);
+    general.setAllParent();
+    general.buildContinueSet();
+    general.buildMonitorFlags();
+
+    collapseSimpleStatements(general, arrowSet, mt);
+    Statement body = general.getStats().size() == 1 ? general.getFirst() : buildFallbackSequence(general, arrowSet);
 
     if (body == null) {
       return null;
     }
 
-    body.buildContinueSet();
-    body.buildMonitorFlags();
+    if (body != general) {
+      root.replaceStatement(general, body);
+    }
 
-    RootStatement root = new RootStatement(body, dummyExit, mt);
+    root.getFirst().buildContinueSet();
+    root.getFirst().buildMonitorFlags();
     root.addComments(graph);
     return root;
   }
@@ -79,7 +84,8 @@ public final class ArrowSetStatementBuilder {
   private static void wireGraphEdges(ControlFlowGraph graph,
                                      StructMethod mt,
                                      VBStyleCollection<Statement, Integer> stats,
-                                     DummyExitStatement dummyExit) {
+                                     DummyExitStatement dummyExit,
+                                     Statement general) {
     Set<Integer> exitPredIds = new HashSet<>();
     for (BasicBlock exitPred : graph.getLast().getPreds()) {
       exitPredIds.add(exitPred.id);
@@ -94,16 +100,18 @@ public final class ArrowSetStatementBuilder {
       boolean hasDummyExit = false;
       for (BasicBlock succ : block.getSuccs()) {
         Statement succStat = stats.getWithKey(succ.id);
-        if (succStat != null) {
+        if (succ.id == graph.getFirst().id) {
+          stat.addSuccessor(new StatEdge(StatEdge.TYPE_CONTINUE, stat, general, general));
+        } else if (succStat != null) {
           stat.addSuccessor(new StatEdge(StatEdge.TYPE_REGULAR, stat, succStat));
         } else {
           hasDummyExit = true;
-          stat.addSuccessor(new StatEdge(exitEdgeType(graph, block), stat, dummyExit));
+          stat.addSuccessor(new StatEdge(exitEdgeType(graph, block), stat, dummyExit, general));
         }
       }
 
       if (!hasDummyExit && exitPredIds.contains(block.id)) {
-        stat.addSuccessor(new StatEdge(exitEdgeType(graph, block), stat, dummyExit));
+        stat.addSuccessor(new StatEdge(exitEdgeType(graph, block), stat, dummyExit, general));
       }
 
       for (BasicBlock succEx : block.getSuccExceptions()) {
@@ -213,10 +221,30 @@ public final class ArrowSetStatementBuilder {
     }
 
     SequenceStatement sequence = new SequenceStatement(ordered);
+    wireSequenceEdges(ordered);
     sequence.setAllParent();
     sequence.buildContinueSet();
     sequence.buildMonitorFlags();
     return sequence;
+  }
+
+  private static void wireSequenceEdges(List<Statement> orderedStats) {
+    for (int i = 0; i < orderedStats.size() - 1; i++) {
+      Statement current = orderedStats.get(i);
+      Statement next = orderedStats.get(i + 1);
+
+      boolean hasRegularEdge = false;
+      for (StatEdge edge : current.getSuccessorEdges(StatEdge.TYPE_REGULAR)) {
+        if (edge.getDestination() == next) {
+          hasRegularEdge = true;
+          break;
+        }
+      }
+
+      if (!hasRegularEdge && current.hasBasicSuccEdge()) {
+        current.addSuccessor(new StatEdge(StatEdge.TYPE_REGULAR, current, next));
+      }
+    }
   }
 
   private static List<Statement> orderForCollapse(GeneralStatement general, ArrowSet arrowSet) {
