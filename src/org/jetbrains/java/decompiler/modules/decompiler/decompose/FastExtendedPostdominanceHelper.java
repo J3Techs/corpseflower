@@ -33,6 +33,7 @@ public class FastExtendedPostdominanceHelper {
   private Statement statement;
 
   private FastFixedSetFactory<Integer> factory;
+  private Set<Integer> universe;
 
   public HashMap<Integer, Set<Integer>> getExtendedPostdominators(Statement statement) {
     if (!(statement instanceof GeneralStatement)) {
@@ -45,9 +46,23 @@ public class FastExtendedPostdominanceHelper {
     for (Statement st : statement.getStats()) {
       set.add(st.id);
     }
+    this.universe = set;
     this.factory = FastFixedSetFactory.create(set);
 
-    lstReversePostOrderList = statement.getReversePostOrderList();
+    lstReversePostOrderList = new ArrayList<>();
+    for (Statement stat : statement.getReversePostOrderList()) {
+      if (this.universe.contains(stat.id)) {
+        lstReversePostOrderList.add(stat);
+      }
+    }
+    for (Statement stat : statement.getStats()) {
+      if (!this.universe.contains(stat.id)) {
+        continue;
+      }
+      if (!lstReversePostOrderList.contains(stat)) {
+        lstReversePostOrderList.add(stat);
+      }
+    }
 
     //		try {
     //			DotExporter.toDotFile(statement, new File("c:\\Temp\\stat1.dot"));
@@ -216,8 +231,12 @@ public class FastExtendedPostdominanceHelper {
           setPred = mapSupportPoints.get(prededge.getSource().id);
         }
 
-        // setPred cannot be empty as it is a reachability set
-        lstPredSets.add(setPred);
+        // Dispatcher-inserted regions can leave predecessors without a retained
+        // transient reachability set. Skip those and let the remaining
+        // predecessors define the intersection.
+        if (setPred != null) {
+          lstPredSets.add(setPred);
+        }
       }
 
       for (int id : setReachability) {
@@ -348,6 +367,9 @@ public class FastExtendedPostdominanceHelper {
       mapSets.clear();
 
       for (Statement stat : lstReversePostOrderList) {
+        if (!this.universe.contains(stat.id)) {
+          continue;
+        }
 
         FastFixedSet<Integer> set = factory.createEmptySet();
         set.add(stat.id);
@@ -355,6 +377,9 @@ public class FastExtendedPostdominanceHelper {
         for (StatEdge prededge : stat.getAllPredecessorEdges()) {
           if ((prededge.getType() & edgetype) != 0) {
             Statement pred = prededge.getSource();
+            if (!this.universe.contains(pred.id)) {
+              continue;
+            }
 
             FastFixedSet<Integer> setPred = mapSets.get(pred.id);
             if (setPred == null) {
@@ -382,6 +407,9 @@ public class FastExtendedPostdominanceHelper {
               boolean remstat = true;
               for (StatEdge sucedge : pred.getAllSuccessorEdges()) {
                 if ((sucedge.getType() & edgetype) != 0) {
+                  if (!this.universe.contains(sucedge.getDestination().id)) {
+                    continue;
+                  }
                   if (!mapSets.containsKey(sucedge.getDestination().id)) {
                     remstat = false;
                     break;
@@ -402,7 +430,6 @@ public class FastExtendedPostdominanceHelper {
       }
     }
   }
-
 
   private interface IReachabilityAction {
     boolean action(Statement node, HashMap<Integer, FastFixedSet<Integer>> mapSets);

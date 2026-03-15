@@ -1,6 +1,7 @@
 // Copyright 2000-2020 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license that can be found in the LICENSE file.
 package org.jetbrains.java.decompiler.modules.decompiler.stats;
 
+import org.corpseflower.irreducible.DispatcherBlockBuilder;
 import org.jetbrains.java.decompiler.code.SwitchInstruction;
 import org.jetbrains.java.decompiler.code.cfg.BasicBlock;
 import org.jetbrains.java.decompiler.main.DecompilerContext;
@@ -34,6 +35,7 @@ public class SwitchStatement extends Statement {
   private final List<Exprent> caseGuards = new ArrayList<>();
 
   private final Set<Statement> scopedCaseStatements = new HashSet<>();
+  private final Set<Statement> hiddenSyntheticScaffolds = new LinkedHashSet<>();
 
   private StatEdge defaultEdge;
 
@@ -75,6 +77,19 @@ public class SwitchStatement extends Statement {
     }
   }
 
+  protected SwitchStatement(Statement head, Statement poststat, Collection<? extends Statement> hiddenScaffolds) {
+    this(head, poststat);
+
+    for (Statement scaffold : hiddenScaffolds) {
+      if (scaffold == null || stats.containsKey(scaffold.id)) {
+        continue;
+      }
+
+      stats.addWithKey(scaffold, scaffold.id);
+      hiddenSyntheticScaffolds.add(scaffold);
+    }
+  }
+
   // *****************************************************************************
   // public methods
   // *****************************************************************************
@@ -82,6 +97,10 @@ public class SwitchStatement extends Statement {
   public static Statement isHead(Statement head) {
 
     if (head instanceof BasicBlockStatement && head.getLastBasicType() == LastBasicType.SWITCH) {
+    Statement dispatcherSwitch = buildSyntheticDispatcherSwitch(head);
+    if (dispatcherSwitch != null) {
+      return dispatcherSwitch;
+    }
 
       List<Statement> lst = new ArrayList<>();
       if (DecHelper.isChoiceStatement(head, lst)) {
@@ -100,6 +119,92 @@ public class SwitchStatement extends Statement {
     }
 
     return null;
+  }
+
+  private static Statement buildSyntheticDispatcherSwitch(Statement head) {
+    if (!(head instanceof BasicBlockStatement basic) ||
+        !DispatcherBlockBuilder.isSyntheticDispatcherScaffold(basic.getBlock())) {
+      return null;
+    }
+
+    Set<Statement> caseNodes = new LinkedHashSet<>(head.getNeighboursSet(StatEdge.TYPE_REGULAR, EdgeDirection.FORWARD));
+    if (caseNodes.size() < 2 || caseNodes.contains(head)) {
+      return null;
+    }
+
+    for (Statement stat : caseNodes) {
+      if (stat.isMonitorEnter()) {
+        return null;
+      }
+    }
+
+    Statement post = findSyntheticDispatcherPost(head, caseNodes);
+    Set<Statement> hiddenScaffolds = collectSyntheticDispatcherScaffolds(head, caseNodes);
+    List<Statement> syntheticChoice = new ArrayList<>();
+    syntheticChoice.add(head);
+    syntheticChoice.addAll(caseNodes);
+    syntheticChoice.addAll(hiddenScaffolds);
+
+    Set<Statement> ignoredHandlers = collectSyntheticDispatcherIgnoredHandlers(syntheticChoice);
+    if (!DecHelper.checkStatementExceptions(syntheticChoice, ignoredHandlers)) {
+      // The dispatcher scaffold is synthetic and only exists to give reducible structure to a
+      // region Corpseflower already identified as valid. Keep the switch match even when the
+      // surrounding exception ranges span outside the synthetic case entries.
+    }
+
+    return new SwitchStatement(head, post, hiddenScaffolds);
+  }
+
+  private static Set<Statement> collectSyntheticDispatcherScaffolds(Statement head, Set<Statement> caseNodes) {
+    Set<Statement> scaffolds = new LinkedHashSet<>();
+    for (Statement pred : head.getNeighboursSet(StatEdge.TYPE_REGULAR, EdgeDirection.BACKWARD)) {
+      if (pred == head || caseNodes.contains(pred)) {
+        continue;
+      }
+
+      if (pred instanceof BasicBlockStatement basic &&
+          DispatcherBlockBuilder.isSyntheticDispatcherScaffold(basic.getBlock()) &&
+          basic.getBlock().size() == 2) {
+        scaffolds.add(pred);
+      }
+    }
+    return scaffolds;
+  }
+
+  private static Set<Statement> collectSyntheticDispatcherIgnoredHandlers(List<Statement> syntheticChoice) {
+    Set<Statement> scope = new LinkedHashSet<>(syntheticChoice);
+    Set<Statement> ignoredHandlers = new LinkedHashSet<>();
+
+    for (Statement stat : syntheticChoice) {
+      for (StatEdge edge : stat.getSuccessorEdges(StatEdge.TYPE_EXCEPTION)) {
+        Statement handler = edge.getDestination();
+        if (!scope.contains(handler) ||
+            !scope.containsAll(handler.getNeighboursSet(StatEdge.TYPE_EXCEPTION, EdgeDirection.BACKWARD))) {
+          ignoredHandlers.add(handler);
+        }
+      }
+    }
+
+    return ignoredHandlers;
+  }
+
+  private static Statement findSyntheticDispatcherPost(Statement head, Set<Statement> caseNodes) {
+    Statement post = null;
+    for (Statement stat : caseNodes) {
+      Set<Statement> exits = new LinkedHashSet<>(stat.getNeighboursSet(StatEdge.TYPE_REGULAR, EdgeDirection.FORWARD));
+      exits.removeAll(caseNodes);
+      exits.remove(head);
+
+      if (exits.size() == 1) {
+        Statement candidate = exits.iterator().next();
+        if (post == null) {
+          post = candidate;
+        } else if (post != candidate) {
+          return null;
+        }
+      }
+    }
+    return post;
   }
 
   @Override
@@ -212,7 +317,12 @@ public class SwitchStatement extends Statement {
   @Override
   public List<Object> getSequentialObjects() {
 
-    List<Object> lst = new ArrayList<>(stats);
+    List<Object> lst = new ArrayList<>(stats.size());
+    for (Statement stat : stats) {
+      if (!hiddenSyntheticScaffolds.contains(stat)) {
+        lst.add(stat);
+      }
+    }
     lst.add(1, headexprent.get(0));
     // make sure guards can be simplified by other helpers
     for (Exprent caseGuard : getCaseGuards()) {
@@ -302,6 +412,11 @@ public class SwitchStatement extends Statement {
       }
     }
 
+    if (hiddenSyntheticScaffolds.remove(oldstat)) {
+      hiddenSyntheticScaffolds.add(newstat);
+      changedAny = true;
+    }
+
     ValidationHelper.assertTrue(changedAny, "Replaced statement in switch without changing any case statements!");
 
     super.replaceStatement(oldstat, newstat);
@@ -353,6 +468,11 @@ public class SwitchStatement extends Statement {
     // case values
     BasicBlockStatement bbstat = (BasicBlockStatement)first;
     int[] values = ((SwitchInstruction)bbstat.getBlock().getLastInstruction()).getValues();
+
+    if (DispatcherBlockBuilder.isSyntheticDispatcherScaffold(bbstat.getBlock())) {
+      sortSyntheticDispatcherEdgesAndNodes(values);
+      return;
+    }
 
     List<Statement> nodes = new ArrayList<>(stats.size() - 1);
     List<List<Integer>> edges = new ArrayList<>(stats.size() - 1);
@@ -411,9 +531,9 @@ public class SwitchStatement extends Statement {
         HashSet<Statement> setPreds = new HashSet<>(stat.getNeighbours(StatEdge.TYPE_REGULAR, EdgeDirection.BACKWARD));
         setPreds.remove(first);
 
-        if (!setPreds.isEmpty()) {
+        if (setPreds.size() == 1) {
           Statement pred =
-            setPreds.iterator().next(); // assumption: at most one predecessor node besides the head. May not hold true for obfuscated code.
+            setPreds.iterator().next();
           for (int j = 0; j < nodes.size(); j++) {
             if (j != (index - 1) && nodes.get(j) == pred) {
               nodes.add(j + 1, stat);
@@ -477,6 +597,41 @@ public class SwitchStatement extends Statement {
         stats.addWithKey(bstat, bstat.id);
         bstat.setParent(this);
       }
+    }
+
+    caseStatements = nodes;
+    caseEdges = lstEdges;
+    caseValues = lstValues;
+  }
+
+  private void sortSyntheticDispatcherEdgesAndNodes(int[] values) {
+    List<Statement> nodes = new ArrayList<>();
+    List<List<StatEdge>> lstEdges = new ArrayList<>();
+    List<List<Exprent>> lstValues = new ArrayList<>();
+
+    LinkedHashMap<Statement, List<StatEdge>> groupedEdges = new LinkedHashMap<>();
+    for (StatEdge edge : first.getSuccessorEdges(STATEDGE_DIRECT_ALL)) {
+      groupedEdges.computeIfAbsent(edge.getDestination(), key -> new ArrayList<>()).add(edge);
+    }
+
+    List<StatEdge> lstSuccs = first.getSuccessorEdges(STATEDGE_DIRECT_ALL);
+    for (Map.Entry<Statement, List<StatEdge>> entry : groupedEdges.entrySet()) {
+      Statement stat = entry.getKey();
+      List<StatEdge> grouped = entry.getValue();
+      List<Exprent> groupedValues = new ArrayList<>(grouped.size());
+
+      for (StatEdge edge : grouped) {
+        int index = lstSuccs.indexOf(edge);
+        if (index <= 0) {
+          groupedValues.add(null);
+        } else {
+          groupedValues.add(new ConstExprent(values[index - 1], false, null));
+        }
+      }
+
+      nodes.add(stat);
+      lstEdges.add(grouped);
+      lstValues.add(groupedValues);
     }
 
     caseStatements = nodes;

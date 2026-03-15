@@ -1,6 +1,7 @@
 // Copyright 2000_2021 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license that can be found in the LICENSE file.
 package org.jetbrains.java.decompiler.main.rels;
 
+import org.corpseflower.irreducible.IrreducibleDispatcherInserter;
 import org.jetbrains.java.decompiler.api.java.JavaPassLocation;
 import org.jetbrains.java.decompiler.api.plugin.LanguageSpec;
 import org.jetbrains.java.decompiler.api.plugin.pass.PassContext;
@@ -30,6 +31,7 @@ import org.jetbrains.java.decompiler.util.DotExporter;
 import java.io.IOException;
 
 public class MethodProcessor implements Runnable {
+  private static final int MAX_DISPATCHER_RETRY_ROUNDS = 3;
   public static ThreadLocal<RootStatement> debugCurrentlyDecompiling = ThreadLocal.withInitial(() -> null);
   public static ThreadLocal<ControlFlowGraph> debugCurrentCFG = ThreadLocal.withInitial(() -> null);
   public static ThreadLocal<DecompileRecord> debugCurrentDecompileRecord = ThreadLocal.withInitial(() -> null);
@@ -166,7 +168,7 @@ public class MethodProcessor implements Runnable {
     }
 
     DotExporter.toDotFile(graph, mt, "cfgParsed", true);
-    RootStatement root = DomHelper.parseGraph(graph, mt, 0);
+    RootStatement root = parseGraphWithDispatcherFallback(graph, mt, 0);
 
     DecompileRecord decompileRecord = new DecompileRecord(mt);
     debugCurrentDecompileRecord.set(decompileRecord);
@@ -184,7 +186,7 @@ public class MethodProcessor implements Runnable {
       decompileRecord.add("ProcessFinallyOld_" + finallyProcessed, root);
       DotExporter.toDotFile(graph, mt, "cfgProcessFinally_" + finallyProcessed, true);
 
-      root = DomHelper.parseGraph(graph, mt, finallyProcessed);
+      root = parseGraphWithDispatcherFallback(graph, mt, finallyProcessed);
       root.addComments(oldRoot);
 
       decompileRecord.add("ProcessFinally_" + finallyProcessed, root);
@@ -482,6 +484,56 @@ public class MethodProcessor implements Runnable {
     mt.releaseResources();
 
     return root;
+  }
+
+  private static RootStatement parseGraphWithDispatcherFallback(ControlFlowGraph graph, StructMethod mt, int iteration) {
+    RuntimeException firstFailure = null;
+    int totalDispatchers = 0;
+
+    for (int round = 0; round <= MAX_DISPATCHER_RETRY_ROUNDS; round++) {
+      try {
+        return DomHelper.parseGraph(graph, mt, iteration);
+      } catch (RuntimeException ex) {
+        if (!isParseGraphFailure(ex)) {
+          throw ex;
+        }
+
+        if (firstFailure == null) {
+          firstFailure = ex;
+        } else if (ex != firstFailure) {
+          ex.addSuppressed(firstFailure);
+          firstFailure = ex;
+        }
+
+        if (round == MAX_DISPATCHER_RETRY_ROUNDS) {
+          throw firstFailure;
+        }
+
+        int dispatchers = IrreducibleDispatcherInserter.insertDispatchers(graph, mt);
+        if (dispatchers <= 0) {
+          throw firstFailure;
+        }
+
+        totalDispatchers += dispatchers;
+        DecompilerContext.getLogger().writeMessage(
+          "Retrying " + mt.getName() + mt.getDescriptor() +
+          " with " + dispatchers + " new Purplesyringa dispatcher(s) (total " + totalDispatchers + ")",
+          IFernflowerLogger.Severity.INFO
+        );
+        DeadCodeHelper.mergeBasicBlocks(graph);
+        DotExporter.errorToDotFile(graph, mt, "cfgIrreducibleDispatchers_" + iteration + "_" + (round + 1));
+        DotExporter.toDotFile(graph, mt, "cfgIrreducibleDispatchers_" + iteration + "_" + (round + 1), true);
+      }
+    }
+
+    throw firstFailure;
+  }
+
+  private static boolean isParseGraphFailure(RuntimeException ex) {
+    String message = ex.getMessage();
+    return message != null &&
+           (message.contains("parsing failure") ||
+            message.contains("computing post reverse post order failed"));
   }
 
   public RootStatement getResult() throws Throwable {

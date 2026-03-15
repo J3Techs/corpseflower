@@ -2568,6 +2568,7 @@ public final class LegacyFdrsDeobfuscator {
         while (changed && iterations < 10) {
             changed = false;
             iterations++;
+            Map<Integer, Integer> localInitValues = collectMethodEntryLocalIntInits(mn);
 
             // Pass A: Replace INVOKESTATIC to ZKM/per-class ()I methods with constants
             if (runOpaqueResolution) {
@@ -2762,6 +2763,7 @@ public final class LegacyFdrsDeobfuscator {
                 for (AbstractInsnNode target : chainTargets) {
                     // Walk backwards collecting the expression tree as a linear chain
                     List<AbstractInsnNode> chain = new ArrayList<>();
+                    Map<AbstractInsnNode, Integer> resolvedLoadValues = new IdentityHashMap<>();
                     chain.add(target);
                     int needed = 2; // binary ops need 2 operands
                     AbstractInsnNode cur = skipNonInsn(target.getPrevious(), true);
@@ -2770,6 +2772,15 @@ public final class LegacyFdrsDeobfuscator {
                     while (cur != null && needed > 0 && allConst && maxChain-- > 0) {
                         if (isConstantPush(cur)) {
                             chain.add(0, cur);
+                            needed--;
+                        } else if (cur.getOpcode() == Opcodes.ILOAD && cur instanceof VarInsnNode vi) {
+                            Integer loadValue = resolveKnownIntLocalValue(mn, vi, localInitValues);
+                            if (loadValue == null) {
+                                allConst = false;
+                                break;
+                            }
+                            chain.add(0, cur);
+                            resolvedLoadValues.put(cur, loadValue);
                             needed--;
                         } else if (isBinaryIntArith(cur.getOpcode())) {
                             chain.add(0, cur);
@@ -2816,6 +2827,10 @@ public final class LegacyFdrsDeobfuscator {
                     for (AbstractInsnNode ci : chain) {
                         if (isConstantPush(ci)) {
                             stack.push(getConstantValue(ci));
+                        } else if (ci.getOpcode() == Opcodes.ILOAD) {
+                            Integer value = resolvedLoadValues.get(ci);
+                            if (value == null) { evalOk = false; break; }
+                            stack.push(value);
                         } else if (ci.getOpcode() == Opcodes.DUP) {
                             if (stack.isEmpty()) { evalOk = false; break; }
                             stack.push(stack.peek());
@@ -2869,22 +2884,6 @@ public final class LegacyFdrsDeobfuscator {
             // v2.8: Also handles ILOAD k when localIdx was initialized with an odd constant
             //       (from register field localization: ICONST odd; ISTORE idx at method entry).
             {
-                // Build map of local variable init values from method entry
-                // (localizeRegisterFields inserts ICONST val; ISTORE idx at the start)
-                Map<Integer, Integer> localInitValues = new HashMap<>();
-                for (AbstractInsnNode mi = mn.instructions.getFirst(); mi != null; mi = mi.getNext()) {
-                    if (mi instanceof LabelNode || mi instanceof LineNumberNode || mi instanceof FrameNode)
-                        continue;
-                    if (isConstantPush(mi)) {
-                        AbstractInsnNode store = skipNonInsn(mi.getNext(), false);
-                        if (store != null && store.getOpcode() == Opcodes.ISTORE && store instanceof VarInsnNode vi) {
-                            localInitValues.put(vi.var, getConstantValue(mi));
-                            mi = store; // skip past the pair
-                            continue;
-                        }
-                    }
-                    break; // Stop at first non-init instruction
-                }
                 List<AbstractInsnNode> iremInsns = new ArrayList<>();
                 for (AbstractInsnNode insn = mn.instructions.getFirst(); insn != null; insn = insn.getNext()) {
                     if (insn.getOpcode() == Opcodes.IREM) iremInsns.add(insn);
@@ -2910,8 +2909,7 @@ public final class LegacyFdrsDeobfuscator {
                         if (isConstantPush(kNode)) {
                             k = getConstantValue(kNode);
                         } else if (kNode.getOpcode() == Opcodes.ILOAD && kNode instanceof VarInsnNode kVar) {
-                            // v2.8: Check if this ILOAD is a localized register field with known odd init
-                            Integer initVal = localInitValues.get(kVar.var);
+                            Integer initVal = resolveKnownIntLocalValue(mn, kVar, localInitValues);
                             if (initVal == null) continue;
                             k = initVal;
                         } else {
@@ -2985,8 +2983,7 @@ public final class LegacyFdrsDeobfuscator {
                             if (kNode != null && isConstantPush(kNode)) {
                                 k = getConstantValue(kNode);
                             } else if (kNode != null && kNode.getOpcode() == Opcodes.ILOAD && kNode instanceof VarInsnNode kVar2) {
-                                // v2.8: ILOAD from localized register field with known odd init
-                                Integer initVal2 = localInitValues.get(kVar2.var);
+                                Integer initVal2 = resolveKnownIntLocalValue(mn, kVar2, localInitValues);
                                 if (initVal2 != null) k = initVal2;
                             }
                             if (k != Integer.MIN_VALUE) {
@@ -3368,6 +3365,46 @@ public final class LegacyFdrsDeobfuscator {
      * resolving predicates at merge points (same value → resolves; different → UNKNOWN = safe).
      * Skips <clinit> methods. Idempotent: returns 0 on subsequent rounds.
      */
+    static Map<Integer, Integer> collectMethodEntryLocalIntInits(MethodNode mn) {
+        Map<Integer, Integer> localInitValues = new HashMap<>();
+        for (AbstractInsnNode mi = mn.instructions.getFirst(); mi != null; mi = mi.getNext()) {
+            if (mi instanceof LabelNode || mi instanceof LineNumberNode || mi instanceof FrameNode) {
+                continue;
+            }
+            if (isConstantPush(mi)) {
+                AbstractInsnNode store = skipNonInsn(mi.getNext(), false);
+                if (store != null && store.getOpcode() == Opcodes.ISTORE && store instanceof VarInsnNode vi) {
+                    localInitValues.put(vi.var, getConstantValue(mi));
+                    mi = store;
+                    continue;
+                }
+            }
+            break;
+        }
+        return localInitValues;
+    }
+
+    static Integer resolveKnownIntLocalValue(MethodNode mn, VarInsnNode loadInsn, Map<Integer, Integer> entryInitValues) {
+        int var = loadInsn.var;
+        for (AbstractInsnNode cur = skipNonInsn(loadInsn.getPrevious(), true); cur != null; cur = skipNonInsn(cur.getPrevious(), true)) {
+            if (cur.getOpcode() == Opcodes.ISTORE && cur instanceof VarInsnNode store && store.var == var) {
+                AbstractInsnNode valueInsn = skipNonInsn(cur.getPrevious(), true);
+                if (valueInsn != null && isConstantPush(valueInsn)) {
+                    return getConstantValue(valueInsn);
+                }
+                return null;
+            }
+            if (cur.getOpcode() == Opcodes.IINC && cur instanceof IincInsnNode inc && inc.var == var) {
+                Integer prior = entryInitValues.get(var);
+                if (prior == null) {
+                    return null;
+                }
+                return prior + inc.incr;
+            }
+        }
+        return entryInitValues.get(var);
+    }
+
     static int localizeRegisterFields(ClassNode cn, MethodNode mn) {
         if (mn.name.equals("<clinit>")) return 0;
 
@@ -4209,7 +4246,9 @@ public final class LegacyFdrsDeobfuscator {
         if (mn.instructions.size() == 0) return;
 
         // First check: does the method verify cleanly?
-        if (analyzerSucceeds(cn, mn)) return;
+        String initialFailure = analyzeMethodFailure(cn, mn);
+        if (initialFailure == null) return;
+        boolean stackShapeFailure = isStackShapeFailure(initialFailure);
 
         // Method fails verification. Try removing exception entries to fix it.
         boolean changed = true;
@@ -4292,20 +4331,55 @@ public final class LegacyFdrsDeobfuscator {
                 }
                 mn.tryCatchBlocks.add(i, removed);
             }
+
+            if (!changed && stackShapeFailure && !mn.tryCatchBlocks.isEmpty()) {
+                List<TryCatchBlockNode> originalHandlers = new ArrayList<>(mn.tryCatchBlocks);
+                mn.tryCatchBlocks.clear();
+                if (analyzerSucceeds(cn, mn)) {
+                    exnVerifyFixed += originalHandlers.size();
+                    if (verboseMode) {
+                        System.out.println("[FDRS]   verify: removed all exception entries for " +
+                            cn.name + "." + mn.name + mn.desc + " after verifier failure: " + initialFailure);
+                    }
+                    return;
+                }
+                mn.tryCatchBlocks.addAll(originalHandlers);
+            }
         }
     }
 
     /**
      * Try running ASM Analyzer on a method. Returns true if analysis succeeds.
      */
-    static boolean analyzerSucceeds(ClassNode cn, MethodNode mn) {
+    static String analyzeMethodFailure(ClassNode cn, MethodNode mn) {
         try {
             Analyzer<BasicValue> analyzer = new Analyzer<>(new BasicVerifier());
             analyzer.analyze(cn.name, mn);
-            return true;
+            return null;
         } catch (Exception e) {
-            return false;
+            StringBuilder message = new StringBuilder(e.getClass().getSimpleName());
+            if (e.getMessage() != null && !e.getMessage().isBlank()) {
+                message.append(": ").append(e.getMessage());
+            }
+            Throwable cause = e.getCause();
+            if (cause != null && cause.getMessage() != null && !cause.getMessage().isBlank()) {
+                message.append(" | ").append(cause.getClass().getSimpleName()).append(": ").append(cause.getMessage());
+            }
+            return message.toString();
         }
+    }
+
+    static boolean isStackShapeFailure(String failure) {
+        if (failure == null) return false;
+        return failure.contains("Cannot pop operand off an empty stack") ||
+               failure.contains("Incompatible stack heights") ||
+               failure.contains("Incompatible stack size") ||
+               failure.contains("Cannot pop operand") ||
+               failure.contains("Insufficient maximum stack size");
+    }
+
+    static boolean analyzerSucceeds(ClassNode cn, MethodNode mn) {
+        return analyzeMethodFailure(cn, mn) == null;
     }
 
     /**
@@ -4415,8 +4489,22 @@ public final class LegacyFdrsDeobfuscator {
 
         // Remove LocalVariableNodes with missing labels
         if (mn.localVariables != null) {
-            mn.localVariables.removeIf(lv ->
-                !presentLabels.contains(lv.start) || !presentLabels.contains(lv.end));
+            Iterator<?> it = mn.localVariables.iterator();
+            while (it.hasNext()) {
+                Object lv = it.next();
+                try {
+                    Object start = lv.getClass().getField("start").get(lv);
+                    Object end = lv.getClass().getField("end").get(lv);
+                    if (!presentLabels.contains(start) || !presentLabels.contains(end)) {
+                        it.remove();
+                        fixed = true;
+                    }
+                } catch (ReflectiveOperationException | LinkageError ex) {
+                    mn.localVariables.clear();
+                    fixed = true;
+                    break;
+                }
+            }
         }
 
         // Strip stale FrameNode entries — they become invalid after bytecode rewriting.
@@ -4800,10 +4888,17 @@ public final class LegacyFdrsDeobfuscator {
         int renamed = 0;
         for (MethodNode mn : cn.methods) {
             if (mn.localVariables == null) continue;
-            for (LocalVariableNode lvn : mn.localVariables) {
-                if (lvn.name.matches(".*00[4-7][0-9a-fA-F].*")) {
-                    lvn.name = "var" + lvn.index;
-                    renamed++;
+            for (Object lv : mn.localVariables) {
+                try {
+                    Field nameField = lv.getClass().getField("name");
+                    Object rawName = nameField.get(lv);
+                    if (rawName instanceof String name && name.matches(".*00[4-7][0-9a-fA-F].*")) {
+                        int index = lv.getClass().getField("index").getInt(lv);
+                        nameField.set(lv, "var" + index);
+                        renamed++;
+                    }
+                } catch (ReflectiveOperationException | LinkageError ignored) {
+                    break;
                 }
             }
         }

@@ -265,7 +265,9 @@ public class SSAUConstructorSparseEx extends SFormsConstructor {
   private void updateLiveMap(VarVersionPair varVersionPair, SFormsFastMapDirect varMap, boolean calcLiveVars) {
     if (calcLiveVars) {
       VarVersionNode node = this.getNode(varVersionPair);
-
+      if (node == null) {
+        return;
+      }
       node.live = varMap.getCopy();
     }
   }

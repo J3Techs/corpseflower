@@ -455,7 +455,23 @@ public abstract class Statement implements IMatchable {
     HashSet<Statement> setVisited = new HashSet<>();
 
     for (Statement exit : lstexits) {
-      addToPostReversePostOrderList(exit, res, setVisited);
+      addToPostReversePostOrderList(exit, res, setVisited, false);
+    }
+
+    if (res.size() != stats.size()) {
+      // Synthetic dispatcher scaffolds can become reachable only through CONTINUE edges after
+      // statement collapsing. Re-run the walk with CONTINUE predecessors enabled.
+      res.clear();
+      setVisited.clear();
+      for (Statement exit : lstexits) {
+        addToPostReversePostOrderList(exit, res, setVisited, true);
+      }
+
+      for (Statement stat : stats) {
+        if (!setVisited.contains(stat)) {
+          addToPostReversePostOrderList(stat, res, setVisited, true);
+        }
+      }
     }
 
     if (res.size() != stats.size()) {
@@ -649,7 +665,10 @@ public abstract class Statement implements IMatchable {
   }
 
 
-  private static void addToPostReversePostOrderList(Statement stat, List<? super Statement> lst, HashSet<? super Statement> setVisited) {
+  private static void addToPostReversePostOrderList(Statement stat,
+                                                    List<? super Statement> lst,
+                                                    HashSet<? super Statement> setVisited,
+                                                    boolean includeContinuePreds) {
 
     if (setVisited.contains(stat)) { // because of not considered exception edges, s. isExitComponent. Should be rewritten, if possible.
       return;
@@ -661,7 +680,7 @@ public abstract class Statement implements IMatchable {
       Statement pred = prededge.getSource();
 
       if (!setVisited.contains(pred)) {
-        addToPostReversePostOrderList(pred, lst, setVisited);
+        addToPostReversePostOrderList(pred, lst, setVisited, includeContinuePreds);
       }
     }
 
@@ -669,13 +688,22 @@ public abstract class Statement implements IMatchable {
       Statement pred = prededge.getSource();
 
       if (!setVisited.contains(pred)) {
-        addToPostReversePostOrderList(pred, lst, setVisited);
+        addToPostReversePostOrderList(pred, lst, setVisited, includeContinuePreds);
+      }
+    }
+
+    if (includeContinuePreds) {
+      for (StatEdge prededge : stat.mapPredEdges.computeIfAbsent(StatEdge.TYPE_CONTINUE, t -> new ArrayList<>())) {
+        Statement pred = prededge.getSource();
+
+        if (!setVisited.contains(pred)) {
+          addToPostReversePostOrderList(pred, lst, setVisited, true);
+        }
       }
     }
 
     lst.add(0, stat);
   }
-
   // *****************************************************************************
   // getter and setter methods
   // *****************************************************************************

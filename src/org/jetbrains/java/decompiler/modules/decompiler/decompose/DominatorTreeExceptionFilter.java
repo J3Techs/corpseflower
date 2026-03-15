@@ -40,7 +40,9 @@ public class DominatorTreeExceptionFilter {
 
     buildExceptionRanges();
 
-    buildFilter(statement.getFirst().id);
+    for (Integer rootId : domEngine.getRootIds()) {
+      buildFilter(rootId);
+    }
 
     // free resources
     mapTreeBranches.clear();
@@ -49,6 +51,10 @@ public class DominatorTreeExceptionFilter {
 
   public boolean acceptStatementPair(Integer head, Integer exit) {
     Map<Integer, Integer> filter = mapExceptionRangeUniqueExit.get(head);
+    if (filter == null || filter.isEmpty()) {
+      return true;
+    }
+
     for (Entry<Integer, Integer> entry : filter.entrySet()) {
       if (!head.equals(mapExceptionDoms.get(entry.getKey()))) {
         Integer filterExit = entry.getValue();
@@ -68,11 +74,15 @@ public class DominatorTreeExceptionFilter {
     for (int index = lstKeys.size() - 1; index >= 0; index--) {
       Integer key = lstKeys.get(index);
       Integer idom = orderedIDoms.get(index);
+      if (idom == null) {
+        continue;
+      }
       mapTreeBranches.computeIfAbsent(idom, k -> new LinkedHashSet<>()).add(key);
     }
 
-    Integer firstid = statement.getFirst().id;
-    mapTreeBranches.get(firstid).remove(firstid);
+    for (Entry<Integer, Set<Integer>> entry : mapTreeBranches.entrySet()) {
+      entry.getValue().remove(entry.getKey());
+    }
   }
 
   private void buildExceptionRanges() {
@@ -93,7 +103,10 @@ public class DominatorTreeExceptionFilter {
       }
     }
 
-    mapExceptionDoms = buildExceptionDoms(statement.getFirst().id);
+    mapExceptionDoms = new HashMap<>();
+    for (Integer rootId : domEngine.getRootIds()) {
+      mergeExceptionDoms(mapExceptionDoms, buildExceptionDoms(rootId));
+    }
   }
 
   private Map<Integer, Integer> buildExceptionDoms(Integer id) {
@@ -127,6 +140,9 @@ public class DominatorTreeExceptionFilter {
         buildFilter(childid);
 
         Map<Integer, Integer> mapChild = mapExceptionRangeUniqueExit.get(childid);
+        if (mapChild == null) {
+          continue;
+        }
         for (Entry<Integer, Set<Integer>> entry : mapExceptionRanges.entrySet()) {
           Integer handler = entry.getKey();
           Set<Integer> range = entry.getValue();
@@ -150,6 +166,18 @@ public class DominatorTreeExceptionFilter {
     }
 
     mapExceptionRangeUniqueExit.put(id, map);
+  }
+
+  private static void mergeExceptionDoms(Map<Integer, Integer> target, Map<Integer, Integer> source) {
+    for (Entry<Integer, Integer> entry : source.entrySet()) {
+      Integer existing = target.get(entry.getKey());
+      if (!target.containsKey(entry.getKey())) {
+        target.put(entry.getKey(), entry.getValue());
+      }
+      else if (!Objects.equals(existing, entry.getValue())) {
+        target.put(entry.getKey(), null);
+      }
+    }
   }
 
   public DominatorEngine getDomEngine() {

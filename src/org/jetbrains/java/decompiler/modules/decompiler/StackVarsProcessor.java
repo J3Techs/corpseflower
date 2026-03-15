@@ -789,6 +789,9 @@ public class StackVarsProcessor {
   private static boolean getUsedVersions(SSAUConstructorSparseEx ssa, VarVersionPair var, List<? super VarVersionNode> res) {
     VarVersionsGraph ssu = ssa.getSsuVersions();
     VarVersionNode node = ssu.nodes.getWithKey(var);
+    if (node == null) {
+      return false;
+    }
 
     Set<VarVersionNode> setVisited = new HashSet<>();
     Set<VarVersionNode> setNotDoms = new HashSet<>();

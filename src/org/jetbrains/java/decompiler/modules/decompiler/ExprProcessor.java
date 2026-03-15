@@ -437,8 +437,12 @@ public class ExprProcessor implements CodeConstants {
         case opc_areturn:
         case opc_return:
         case opc_athrow:
+          Exprent exitValue = null;
+          if (instr.opcode != opc_return) {
+            exitValue = popOrCreateFallback(stack, instr.opcode == opc_athrow ? VarType.VARTYPE_NULL : methodDescriptor.ret, bytecode_offsets);
+          }
           exprlist.add(new ExitExprent(instr.opcode == opc_athrow ? ExitExprent.Type.THROW : ExitExprent.Type.RETURN,
-                                       instr.opcode == opc_return ? null : stack.pop(),
+                                       exitValue,
                                        instr.opcode == opc_athrow ? null : methodDescriptor.ret,
                                        bytecode_offsets, methodDescriptor));
           break;
@@ -566,7 +570,9 @@ public class ExprProcessor implements CodeConstants {
           stack.pop();
           break;
         case opc_pop:
-          stack.pop();
+          if (!stack.isEmpty()) {
+            stack.pop();
+          }
           // check for synthetic getClass and requireNonNull calls added by the compiler
           // see https://stackoverflow.com/a/20130641
           if (!exprlist.isEmpty()) {
@@ -603,6 +609,23 @@ public class ExprProcessor implements CodeConstants {
           break;
       }
     }
+  }
+
+  private Exprent popOrCreateFallback(ListStack<Exprent> stack, VarType fallbackType, BitSet bytecodeOffsets) {
+    if (!stack.isEmpty()) {
+      return stack.pop();
+    }
+
+    if (fallbackType == null || fallbackType.arrayDim > 0 || fallbackType.type == CodeType.OBJECT || fallbackType.type == CodeType.GENVAR) {
+      return new ConstExprent(VarType.VARTYPE_NULL, null, bytecodeOffsets);
+    }
+
+    return switch (fallbackType.type) {
+      case LONG -> new ConstExprent(VarType.VARTYPE_LONG, 0L, bytecodeOffsets);
+      case FLOAT -> new ConstExprent(VarType.VARTYPE_FLOAT, 0f, bytecodeOffsets);
+      case DOUBLE -> new ConstExprent(VarType.VARTYPE_DOUBLE, 0d, bytecodeOffsets);
+      default -> new ConstExprent(VarType.VARTYPE_INT, 0, bytecodeOffsets);
+    };
   }
 
   private void pushEx(ListStack<Exprent> stack, List<Exprent> exprlist, Exprent exprent) {

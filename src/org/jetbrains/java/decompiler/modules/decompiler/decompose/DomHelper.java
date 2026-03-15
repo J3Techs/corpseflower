@@ -110,9 +110,23 @@ public final class DomHelper implements GraphParser {
     StrongConnectivityHelper schelper = new StrongConnectivityHelper(general);
     List<List<Statement>> components = schelper.getComponents();
 
-    List<Statement> lstStats = general.getPostReversePostOrderList(StrongConnectivityHelper.getExitReps(components));
+    List<Statement> lstStats;
+    try {
+      lstStats = general.getPostReversePostOrderList(StrongConnectivityHelper.getExitReps(components));
+    } catch (RuntimeException ex) {
+      if (!isPostReverseOrderFailure(ex)) {
+        throw ex;
+      }
+
+      DecompilerContext.getLogger().writeMessage(
+        "Falling back to reverse post order while computing postdominators for statement " + general.id,
+        IFernflowerLogger.Severity.WARN
+      );
+      lstStats = buildFallbackStatementOrder(general);
+    }
 
     FastFixedSetFactory<Statement> factory = FastFixedSetFactory.create(lstStats);
+    Set<Statement> scopedStats = new LinkedHashSet<>(lstStats);
 
     FastFixedSet<Statement> setFlagNodes = factory.createCopiedSet();
     FastFixedSet<Statement> initSet = factory.createCopiedSet();
@@ -122,13 +136,19 @@ public final class DomHelper implements GraphParser {
 
       if (StrongConnectivityHelper.isExitComponent(component)) {
         tmpSet = factory.createEmptySet();
-        tmpSet.addAll(component);
+        for (Statement componentStat : component) {
+          if (scopedStats.contains(componentStat)) {
+            tmpSet.add(componentStat);
+          }
+        }
       } else {
         tmpSet = initSet.getCopy();
       }
 
       for (Statement stat : component) {
-        lists.put(stat, tmpSet);
+        if (scopedStats.contains(stat)) {
+          lists.put(stat, tmpSet);
+        }
       }
     }
 
@@ -145,15 +165,20 @@ public final class DomHelper implements GraphParser {
         FastFixedSet<Statement> domsSuccs = factory.createEmptySet();
 
         List<Statement> successors = stat.getNeighbours(StatEdge.TYPE_REGULAR, EdgeDirection.FORWARD);
+        boolean firstScopedSuccessor = true;
 
         for (int j = 0; j < successors.size(); j++) {
           Statement succ = successors.get(j);
           FastFixedSet<Statement> succlst = lists.get(succ);
+          if (succlst == null) {
+            continue;
+          }
 
           // first
-          if (j == 0) {
+          if (firstScopedSuccessor) {
             // Union the sets as it is empty at this point
             domsSuccs.union(succlst);
+            firstScopedSuccessor = false;
           } else {
             domsSuccs.intersection(succlst);
           }
@@ -169,7 +194,9 @@ public final class DomHelper implements GraphParser {
 
           List<Statement> lstPreds = stat.getNeighbours(StatEdge.TYPE_REGULAR, EdgeDirection.BACKWARD);
           for (Statement pred : lstPreds) {
-            setFlagNodes.add(pred);
+            if (lists.containsKey(pred)) {
+              setFlagNodes.add(pred);
+            }
           }
         }
       }
@@ -194,7 +221,7 @@ public final class DomHelper implements GraphParser {
 
       // The postdom list for this statement must be sorted based on the post reverse postorder of the general statement that it's contained in
       // This should lead to proper iteration during general statement creation.
-      lstPosts.sort(Comparator.comparing(mapSortOrder::get));
+      lstPosts.sort(Comparator.comparingInt(id -> mapSortOrder.getOrDefault(id, Integer.MAX_VALUE)));
 
       // After sorting, ensure that the statement that owns this postdominance list comes last, if it comes first.
       if (lstPosts.size() > 1 && lstPosts.get(0) == st.id) {
@@ -548,7 +575,20 @@ public final class DomHelper implements GraphParser {
 
     if (forceall) {
       vbPost = new VBStyleCollection<>();
-      List<Statement> lstAll = stat.getPostReversePostOrderList();
+      List<Statement> lstAll;
+      try {
+        lstAll = stat.getPostReversePostOrderList();
+      } catch (RuntimeException ex) {
+        if (!isPostReverseOrderFailure(ex)) {
+          throw ex;
+        }
+
+        DecompilerContext.getLogger().writeMessage(
+          "Falling back to reverse post order while force-building statement " + stat.id,
+          IFernflowerLogger.Severity.WARN
+        );
+        lstAll = buildFallbackStatementOrder(stat);
+      }
 
       for (Statement st : lstAll) {
         Set<Integer> set = mapExtPost.get(st.id);
@@ -728,7 +768,18 @@ public final class DomHelper implements GraphParser {
       found = false;
 
       // Orders the statement in reverse post order with respect to post dominance, to ensure that the statement is built from the inside out
-      List<Statement> lstStats = stat.getPostReversePostOrderList();
+      List<Statement> lstStats;
+      try {
+        lstStats = stat.getPostReversePostOrderList();
+      } catch (RuntimeException ex) {
+        if (!isPostReverseOrderFailure(ex)) {
+          throw ex;
+        }
+
+        tracer.warn(stat, "Falling back to reverse post order after post reverse order failure");
+        lstStats = buildFallbackStatementOrder(stat);
+      }
+
       for (Statement st : lstStats) {
 
         Statement result = detectStatement(st);
@@ -787,6 +838,25 @@ public final class DomHelper implements GraphParser {
     while (found);
 
     return success;
+  }
+
+  private static boolean isPostReverseOrderFailure(RuntimeException ex) {
+    String message = ex.getMessage();
+    return message != null && message.contains("post reverse post order");
+  }
+
+  private static List<Statement> buildFallbackStatementOrder(Statement stat) {
+    LinkedHashSet<Statement> ordered = new LinkedHashSet<>();
+
+    List<Statement> reversePostOrder = new ArrayList<>(stat.getReversePostOrderList());
+    Collections.reverse(reversePostOrder);
+    ordered.addAll(reversePostOrder);
+
+    List<Statement> missing = new ArrayList<>(stat.getStats());
+    missing.sort(Comparator.comparingInt((Statement statement) -> statement.id).reversed());
+    ordered.addAll(missing);
+
+    return new ArrayList<>(ordered);
   }
 
 

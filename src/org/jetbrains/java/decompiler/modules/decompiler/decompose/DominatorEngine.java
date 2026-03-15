@@ -12,6 +12,7 @@ public class DominatorEngine {
   private final Statement statement;
 
   private final VBStyleCollection<Integer, Integer> colOrderedIDoms = new VBStyleCollection<>();
+  private final Set<Integer> rootIds = new LinkedHashSet<>();
 
 
   public DominatorEngine(Statement statement) {
@@ -23,13 +24,33 @@ public class DominatorEngine {
   }
 
   private void orderStatements() {
+    colOrderedIDoms.clear();
+
+    Set<Integer> universe = new LinkedHashSet<>();
+    for (Statement stat : statement.getStats()) {
+      universe.add(stat.id);
+    }
+
+    Integer firstId = statement.getFirst().id;
+    if (universe.contains(firstId)) {
+      colOrderedIDoms.addWithKey(null, firstId);
+    }
 
     for (Statement stat : statement.getReversePostOrderList()) {
-      colOrderedIDoms.addWithKey(null, stat.id);
+      if (universe.contains(stat.id) && !colOrderedIDoms.containsKey(stat.id)) {
+        colOrderedIDoms.addWithKey(null, stat.id);
+      }
+    }
+
+    for (Statement stat : statement.getStats()) {
+      if (!colOrderedIDoms.containsKey(stat.id)) {
+        colOrderedIDoms.addWithKey(null, stat.id);
+      }
     }
   }
 
   private static Integer getCommonIDom(Integer key1, Integer key2, VBStyleCollection<Integer, Integer> orderedIDoms) {
+    Integer oldKey;
 
     if (key1 == null) {
       return key2;
@@ -43,11 +64,19 @@ public class DominatorEngine {
 
     while (index1 != index2) {
       if (index1 > index2) {
+        oldKey = key1;
         key1 = orderedIDoms.getWithKey(key1);
+        if (key1 == null || key1.equals(oldKey)) {
+          return null;
+        }
         index1 = orderedIDoms.getIndexByKey(key1);
       }
       else {
+        oldKey = key2;
         key2 = orderedIDoms.getWithKey(key2);
+        if (key2 == null || key2.equals(oldKey)) {
+          return null;
+        }
         index2 = orderedIDoms.getIndexByKey(key2);
       }
     }
@@ -58,8 +87,11 @@ public class DominatorEngine {
   private void calcIDoms() {
 
     orderStatements();
+    rootIds.clear();
 
-    colOrderedIDoms.putWithKey(statement.getFirst().id, statement.getFirst().id);
+    Integer firstId = statement.getFirst().id;
+    colOrderedIDoms.putWithKey(firstId, firstId);
+    rootIds.add(firstId);
 
     // exclude first statement
     List<Integer> lstIds = colOrderedIDoms.getLstKeys().subList(1, colOrderedIDoms.getLstKeys().size());
@@ -71,12 +103,26 @@ public class DominatorEngine {
       for (int id : lstIds) {
 
         Statement stat = statement.getStats().getWithKey(id);
+        if (stat == null) {
+          continue;
+        }
         Integer idom = null;
 
         for (StatEdge edge : stat.getAllPredecessorEdges()) {
           if (colOrderedIDoms.getWithKey(edge.getSource().id) != null) {
             idom = getCommonIDom(idom, edge.getSource().id, colOrderedIDoms);
+            if (idom == null) {
+              break;
+            }
           }
+        }
+
+        if (idom == null) {
+          idom = id;
+          rootIds.add(id);
+        }
+        else {
+          rootIds.remove(id);
         }
 
         Integer oldidom = colOrderedIDoms.putWithKey(idom, id);
@@ -93,6 +139,10 @@ public class DominatorEngine {
 
   public VBStyleCollection<Integer, Integer> getOrderedIDoms() {
     return colOrderedIDoms;
+  }
+
+  public Set<Integer> getRootIds() {
+    return new LinkedHashSet<>(rootIds);
   }
 
   // Returns if 'node' is dominated by 'dom'
